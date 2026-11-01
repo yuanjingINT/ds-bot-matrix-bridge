@@ -12,6 +12,8 @@ const EMPTY = {
   bots: {},
   // dsBot room id → { matrixRoomId, name, creatorBotId, members, cursor, goneAt? }
   rooms: {},
+  // botId → the same DM record as in `rooms`, so the DM side can be listed on its own.
+  dms: {},
 }
 
 export class BridgeStore {
@@ -69,6 +71,17 @@ export class BridgeStore {
     }
     this.data.bots ??= {}
     this.data.rooms ??= {}
+    this.data.dms ??= {}
+    // Older builds stored DMs in `rooms` without saying so; label them and copy them into
+    // `dms` so "delete a group" and "clean orphan rooms" never treat a DM as a group.
+    for (const [id, record] of Object.entries(this.data.rooms)) {
+      if (record?.dm !== true) continue
+      record.kind = 'dm'
+      this.data.dms[id] = record
+    }
+    for (const record of Object.values(this.data.rooms)) {
+      if (record?.dm !== true && record.kind === undefined) record.kind = 'group'
+    }
     // Older builds kept the account password here. The access token is enough to act as
     // the Bot, so the password is dropped on load and never comes back.
     for (const record of Object.values(this.data.bots)) delete record.password

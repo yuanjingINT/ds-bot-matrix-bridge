@@ -57,10 +57,11 @@ export class MatrixClient {
     const initial_state = encrypted
       ? [{ type: 'm.room.encryption', state_key: '', content: { algorithm: 'm.megolm.v1.aes-sha2' } }]
       : []
-    // The creator must be at 100 from the start: with an explicit override the server does
-    // not add the creator to `users` by itself, and users_default 0 then leaves the room
-    // with nobody able to send state (that was the 403 on power_levels).
-    const override = powerLevels ?? { users: { [this.userId]: 100 }, users_default: 0, invite: 50 }
+    // The creator is NOT listed in `users`: continuwuity treats the room's creator as 100
+    // implicitly and strips the entry when the room is created, but refuses a later
+    // m.room.power_levels event that names the creator (403, verified on tuxai.org).
+    // Listing it here would therefore be useless at best and poison every later update.
+    const override = powerLevels ?? { users: {}, users_default: 0, invite: 50 }
     return this.request('POST', '/createRoom', {
       name,
       ...(topic ? { topic } : {}),
@@ -87,6 +88,10 @@ export class MatrixClient {
     const current = await this.request('GET', `/rooms/${id}/state/m.room.power_levels/`)
     const content = { ...current, users: { ...(current.users ?? {}), [userId]: 100 } }
     await this.request('PUT', `/rooms/${id}/state/m.room.power_levels/`, content, { timeoutMs: 30_000 })
+  }
+
+  async setRoomTopic(roomId, topic) {
+    await this.request('PUT', `/rooms/${encodeURIComponent(roomId)}/state/m.room.topic/`, { topic })
   }
 
   async setRoomName(roomId, name) {

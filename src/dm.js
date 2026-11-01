@@ -37,7 +37,6 @@ export class DirectMessages {
     const invite = [this.config.userMxid].filter(Boolean)
     const created = await client.createRoom({
       name: bot.name,
-      topic: `DS Bot 私聊 · ${bot.name}`,
       invite,
       encrypted: this.config.encrypted,
       powerLevels: { users: { ...(this.config.userMxid ? { [this.config.userMxid]: 100 } : {}) }, users_default: 0, events_default: 0, state_default: 50, invite: 50 },
@@ -46,6 +45,7 @@ export class DirectMessages {
     const next = {
       matrixRoomId: created.room_id,
       name: bot.name,
+      kind: 'dm',
       dm: true,
       creatorBotId: bot.id,
       members: [bot.id],
@@ -79,6 +79,7 @@ export class DirectMessages {
       return {
         matrixRoomId: roomId,
         name: bot.name,
+        kind: 'dm',
         dm: true,
         creatorBotId: bot.id,
         members: [bot.id],

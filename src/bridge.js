@@ -18,6 +18,14 @@ const ADOPT_SYNC_FILTER = JSON.stringify({
   account_data: { types: [] },
 })
 
+const TOPIC_MAX = 900
+/** The group's own description, as the room topic. Host → Matrix only. */
+const topicOf = room => {
+  const notice = typeof room?.notice === 'string' ? room.notice.trim() : ''
+  if (notice === '') return ''
+  return notice.length > TOPIC_MAX ? `${notice.slice(0, TOPIC_MAX)}…` : notice
+}
+
 const txnIdOf = (roomId, seq) => `dsbot.${roomId}.${seq}`.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)
 
 export class Bridge {
@@ -136,6 +144,7 @@ export class Bridge {
     const record = this.store.room(room.id)
     if (record?.matrixRoomId && record.goneAt === undefined) {
       if (record.name !== room.name) await this.renameRoom(room.id, record, room.name)
+      await this.syncTopic(room.id, record, room)
       await this.ensureMembers(room.id, record, members)
       await this.syncRoomAvatar(room.id, record, record.creatorBotId)
       return record
@@ -175,11 +184,29 @@ export class Bridge {
     ].filter(Boolean))]
     const created = await client.createRoom({
       name: room.name,
-      topic: `DS Bot 群聊 · ${room.name}`,
+      ...(topicOf(room) === '' ? {} : { topic: topicOf(room) }),
       invite,
       encrypted: this.config.encrypted,
-      powerLevels: this.powerLevelsFor(creatorId, members),
+      powerLevels: this.powerLevelsFor(creatorId, members, creator.userId),
     })
+    // A room its creator cannot administer is not a usable room. The map cannot tell us
+    // (the creator is implicit), so probe the permission instead: writing the very levels
+    // it already has must be allowed for the creator.
+    const levels = await client.request('GET', `/rooms/${encodeURIComponent(created.room_id)}/state/m.room.power_levels/`).catch(() => undefined)
+    try {
+      await client.request('PUT', `/rooms/${encodeURIComponent(created.room_id)}/state/m.room.power_levels/`, levels ?? {}, { timeoutMs: 20_000 })
+    } catch (error) {
+      this.log('power-levels-unverified', {
+        group_id: room.id,
+        group: room.name,
+        room_id: created.room_id,
+        creator: creator.userId,
+        status: error?.status,
+        errcode: error?.errcode,
+        users: levels?.users ?? null,
+      })
+      throw new Error(`the new room ${created.room_id} is not administrable by its creator ${creator.userId}: ${error?.message ?? error}`)
+    }
     if (record?.matrixRoomId && record.matrixRoomId !== created.room_id) {
       // The group came back (or the room had to be rebuilt): migrate the old room instead
       // of abandoning it, so the user's client follows the pointer.
@@ -188,6 +215,7 @@ export class Bridge {
     const next = {
       matrixRoomId: created.room_id,
       name: room.name,
+      kind: 'group',
       creatorBotId: creatorId,
       members,
       cursor: 0,
@@ -212,9 +240,9 @@ export class Bridge {
   // has to be in the map: continuwuity does not give the creator 100 implicitly once an
   // explicit `users` map is set, so leaving it out leaves the room unadministrable (avatar,
   // name, E2EE state would all be 403 for the very account that made the room).
-  powerLevelsFor(creatorId, members) {
+  powerLevelsFor(creatorId, members, creatorUserId) {
     return {
-      users: this.powerUsers(creatorId, members),
+      users: this.powerUsers(creatorId, members, creatorUserId),
       users_default: 0,
       events_default: 0,
       state_default: 50,
@@ -225,11 +253,15 @@ export class Bridge {
     }
   }
 
-  powerUsers(creatorId, members) {
+  // The creator is left out on purpose (see matrix.js): the homeserver gives it 100
+  // implicitly, and naming it in a later power_levels event is refused with 403.
+  //
+  // `creatorUserId` is the id the creating account actually has; the store lookup is only a
+  // fallback, because at creation time the account record may not be written yet.
+  powerUsers(creatorId, members, creatorUserId) {
     const users = {}
     if (this.config.userMxid) users[this.config.userMxid] = 100
-    const creator = this.store.bot(creatorId)?.userId
-    if (creator !== undefined) users[creator] = 100
+    const creator = creatorUserId ?? this.store.bot(creatorId)?.userId
     for (const botId of members) {
       const userId = this.store.bot(botId)?.userId
       if (userId && userId !== creator) users[userId] = 50
@@ -424,6 +456,25 @@ export class Bridge {
     }
   }
 
+  // The group description in DS Bot is the room topic in Matrix. It is compared on every
+  // pass like the name, so an edit lands within a tick; Matrix edits are overwritten on
+  // purpose, because the group chat is the source of truth.
+  async syncTopic(roomId, record, room) {
+    const topic = topicOf(room)
+    if (record.topic === topic) return
+    if (topic === '' && record.topic === undefined) return
+    const creator = this.store.bot(record.creatorBotId)
+    if (creator === undefined) return
+    try {
+      await this.accounts.clientFor(creator).setRoomTopic(record.matrixRoomId, topic)
+      record.topic = topic
+      await this.store.setRoom(roomId, record)
+      this.log('room-topic', { group_id: roomId, room_id: record.matrixRoomId, length: topic.length })
+    } catch (error) {
+      this.log('room-topic-failed', { group_id: roomId, room_id: record.matrixRoomId, message: error?.message ?? String(error), errcode: error?.errcode })
+    }
+  }
+
   async renameRoom(roomId, record, name) {
     const creator = this.store.bot(record.creatorBotId)
     if (creator === undefined) return
@@ -441,22 +492,38 @@ export class Bridge {
   // history stays readable and the bridge simply stops writing to it.
   async retireGoneRooms(team, liveIds) {
     for (const [roomId, record] of Object.entries(this.store.rooms())) {
+      // A DM is not a group: it lives while its Bot does, and is never retired here.
       if (record.dm === true) continue
-      if (liveIds.has(roomId) || record.goneAt !== undefined) continue
-      record.goneAt = Date.now()
-      await this.store.setRoom(roomId, record)
-      this.log('room-gone', { group_id: roomId, room_id: record.matrixRoomId, name: record.name })
-      if (this.config.onGroupDeleted === 'ignore') continue
-      const creator = this.store.bot(record.creatorBotId)
-      if (creator === undefined) continue
-      try {
-        await this.accounts.clientFor(creator).sendMessage(record.matrixRoomId, `dsbot-gone-${record.goneAt}`, {
-          msgtype: 'm.notice',
-          body: `群聊「${record.name}」已在 DS Bot 中删除，这个房间不再接收新消息。`,
-        })
-      } catch (error) {
-        this.log('room-gone-notice-failed', { group_id: roomId, room_id: record.matrixRoomId, message: error?.message ?? String(error) })
+      if (liveIds.has(roomId) || record.retired === true) continue
+      record.goneAt ??= Date.now()
+      if (record.goneLogged !== true) {
+        record.goneLogged = true
+        this.log('room-gone', { group_id: roomId, room_id: record.matrixRoomId, name: record.name })
       }
+      const creator = this.store.bot(record.creatorBotId)
+      if (this.config.onGroupDeleted !== 'ignore' && record.noticeSent !== true && creator !== undefined) {
+        try {
+          await this.accounts.clientFor(creator).sendMessage(record.matrixRoomId, `dsbot-gone-${record.goneAt}`, {
+            msgtype: 'm.notice',
+            body: `群聊「${record.name}」已在 DS Bot 中删除，这个房间不再接收新消息。`,
+          })
+          record.noticeSent = true
+        } catch (error) {
+          this.log('room-gone-notice-failed', { group_id: roomId, room_id: record.matrixRoomId, message: error?.message ?? String(error) })
+        }
+      }
+      // Each Bot steps out, so a deleted group holds no seat in the room; the history stays
+      // readable for the user.
+      for (const botId of record.members ?? []) {
+        if (this.store.bot(botId) === undefined) continue
+        try {
+          await this.accounts.leave(botId, record.matrixRoomId)
+        } catch (error) {
+          this.log('room-gone-leave-failed', { group_id: roomId, room_id: record.matrixRoomId, bot_id: botId, message: error?.message ?? String(error) })
+        }
+      }
+      record.retired = true
+      await this.store.setRoom(roomId, record)
     }
   }
 

@@ -88,6 +88,11 @@ export async function startMockHomeserver({ serverName = 'tuxai.test', registrat
       }
       // The name and topic are creation-time state, as on a real homeserver.
       if (json.name !== undefined) room.state.set('m.room.name|', { name: json.name })
+      if (json.power_level_content_override !== undefined) {
+        // Like continuwuity: the override is stored as given, and the creator is not added
+        // to `users` behind the caller's back.
+        room.state.set('m.room.power_levels|', json.power_level_content_override)
+      }
       if (json.topic !== undefined) room.state.set('m.room.topic|', { topic: json.topic })
       rooms.set(roomId, room)
       return send(res, 200, { room_id: roomId })

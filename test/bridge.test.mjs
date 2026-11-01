@@ -443,3 +443,57 @@ test('a line the bridge injected is not mirrored back into the room', async () =
     await mock.close()
   }
 })
+
+test('the group description becomes the room topic, and edits follow', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const room = group('g1', '群', ['b1'], [])
+    room.notice = '第一个版本的群简介'
+    const { dir, statePath } = await home(teamWith([bot('b1', 'Chief')], room))
+    const paths = { dir, statePath }
+    const bridge = new Bridge(configFor(mock, paths))
+    await bridge.tick()
+    const roomId = [...mock.rooms.keys()][0]
+    assert.equal(mock.rooms.get(roomId).topic, '第一个版本的群简介', 'written at creation time')
+
+    const edited = group('g1', '群', ['b1'], [])
+    edited.notice = '改过的简介'
+    await writeFile(statePath, JSON.stringify(teamWith([bot('b1', 'Chief')], edited), null, 1))
+    await bridge.tick()
+    assert.equal(mock.rooms.get(roomId).state.get('m.room.topic|').topic, '改过的简介', 'an edit lands on the next tick')
+
+    const again = group('g1', '群', ['b1'], [])
+    again.notice = '改过的简介'
+    await writeFile(statePath, JSON.stringify(teamWith([bot('b1', 'Chief')], again), null, 1))
+    const before = mock.log.length
+    await bridge.tick()
+    const puts = mock.log.slice(before).filter(entry => entry.path.includes('/state/m.room.topic/'))
+    assert.equal(puts.length, 0, 'an unchanged description is not written again')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('the room creator stays out of the power map (continuwuity treats it as implicit 100)', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const team = teamWith(
+      [bot('session-chief', 'Chief'), bot('session-qiao', '桥接')],
+      group('session-g1', 'MX 测试', ['session-chief', 'session-qiao']),
+    )
+    const { dir, statePath } = await home(team)
+    const config = configFor(mock, { dir, statePath })
+    await new Bridge(config).tick()
+
+    const [roomId] = mock.rooms.keys()
+    const levels = mock.rooms.get(roomId).state.get('m.room.power_levels|')
+    assert.ok(levels !== undefined, 'the room has power levels')
+    // Listing the creator makes every later power_levels update a 403 on continuwuity, so
+    // the bridge must not name it; the homeserver grants the creator 100 implicitly.
+    assert.equal(levels.users['@chief:tuxai.test'], undefined, 'the creating account is not listed')
+    assert.equal(levels.users[USER], 100, 'the user still has 100')
+    assert.equal(levels.users['@qiaojie:tuxai.test'], 50, 'the other Bot stays at 50')
+  } finally {
+    await mock.close()
+  }
+})
