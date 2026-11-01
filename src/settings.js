@@ -38,11 +38,20 @@ export function loadSettings({ needsHomeserver = true } = {}) {
       return undefined
     }
   })()
+  const userMxid = process.env.MATRIX_USER_ID ?? fileConfig.userMxid ?? ''
   return {
     root,
     homeserverUrl: needsHomeserver ? required('MATRIX_HOMESERVER_URL') : (process.env.MATRIX_HOMESERVER_URL ?? ''),
     registrationToken,
-    userMxid: process.env.MATRIX_USER_ID ?? fileConfig.userMxid ?? '',
+    userMxid,
+    // Who may speak into the group chats from Matrix. Everyone else's messages are
+    // dropped with a `skipped` line, so a room guest cannot impersonate the owner.
+    allowedSenders: (() => {
+      const fromEnv = process.env.MATRIX_ALLOWED_SENDERS
+      if (fromEnv !== undefined && fromEnv !== '') return fromEnv.split(',').map(item => item.trim()).filter(Boolean)
+      if (Array.isArray(fileConfig.allowedSenders) && fileConfig.allowedSenders.length > 0) return fileConfig.allowedSenders
+      return userMxid === '' ? [] : [userMxid]
+    })(),
     userDisplayName: fileConfig.userDisplayName ?? '用户',
     extraInvites: Array.isArray(fileConfig.extraInvites) ? fileConfig.extraInvites : [],
     teamStatePath,
@@ -57,5 +66,16 @@ export function loadSettings({ needsHomeserver = true } = {}) {
     // never needs the browser cookie the /api/bot route wants.
     controlSocket: process.env.MATRIX_BRIDGE_CONTROL ?? fileConfig.controlSocket ?? join(homedir(), '.config', 'matrix-bridge', 'control.sock'),
     receiveEnabled: process.env.MATRIX_BRIDGE_RECEIVE !== '0' && fileConfig.receive !== false,
+    // Optional: the user's own access token, so invites can be accepted for them. Absent
+    // means invites wait in Element, which is fine.
+    userTokenFile: process.env.MATRIX_USER_TOKEN_FILE ?? fileConfig.userTokenFile ?? join(homedir(), '.dsh', 'bot', 'workspace', '.secrets', 'matrix_user_token'),
+    // Accounts whose messages are never taken as inbound: the Bots' own accounts are found
+    // through the store, and older bridge accounts (@dsbridge, Dito's bot) are listed here,
+    // so an old bridge still running on the same rooms cannot echo into a group chat.
+    ignoredSenders: (() => {
+      const fromEnv = (process.env.MATRIX_BRIDGE_IGNORED_SENDERS ?? '').split(',').map(value => value.trim()).filter(Boolean)
+      const fromFile = Array.isArray(fileConfig.ignoredSenders) ? fileConfig.ignoredSenders : []
+      return [...new Set([...fromFile, ...fromEnv])]
+    })(),
   }
 }

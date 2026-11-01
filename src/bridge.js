@@ -103,6 +103,15 @@ export class Bridge {
     }
     const creator = this.store.bot(creatorId)
     if (creator === undefined) return undefined
+    // Before making a room, check whether one of our accounts is already in a room with
+    // this group's name: after a lost state file, adopting beats creating a duplicate.
+    const adopted = await this.adoptExistingRoom(room, members)
+    if (adopted !== undefined) {
+      await this.store.setRoom(room.id, adopted)
+      this.log('room-adopted', { group_id: room.id, group: room.name, room_id: adopted.matrixRoomId })
+      await this.ensureMembers(room.id, adopted, members)
+      return adopted
+    }
     const client = this.accounts.clientFor(creator)
     const others = members.filter(botId => botId !== creatorId)
     const invite = [...new Set([
@@ -140,23 +149,38 @@ export class Bridge {
       } catch (error) {
         this.log('join-failed', { group_id: room.id, room_id: next.matrixRoomId, bot_id: botId, message: error?.message ?? String(error), errcode: error?.errcode })
       }
-      await this.inviteUser(botId, next.matrixRoomId)
+      await this.inviteUser(botId, room.id, next.matrixRoomId)
     }
     return next
   }
 
-  // The user gets 100, every member Bot 50. The room's creator is left out on purpose:
-  // Matrix gives the creator 100 implicitly, and listing it (especially at 50) makes the
-  // roomserver refuse the whole event with 403, leaving the room unadministrable.
+  // The user gets 100, the room's creator Bot 100, every other member Bot 50. The creator
+  // has to be in the map: continuwuity does not give the creator 100 implicitly once an
+  // explicit `users` map is set, so leaving it out leaves the room unadministrable (avatar,
+  // name, E2EE state would all be 403 for the very account that made the room).
   powerLevelsFor(creatorId, members) {
+    return {
+      users: this.powerUsers(creatorId, members),
+      users_default: 0,
+      events_default: 0,
+      state_default: 50,
+      invite: 50,
+      kick: 50,
+      ban: 50,
+      redact: 50,
+    }
+  }
+
+  powerUsers(creatorId, members) {
     const users = {}
     if (this.config.userMxid) users[this.config.userMxid] = 100
     const creator = this.store.bot(creatorId)?.userId
+    if (creator !== undefined) users[creator] = 100
     for (const botId of members) {
       const userId = this.store.bot(botId)?.userId
       if (userId && userId !== creator) users[userId] = 50
     }
-    return { users, users_default: 0, events_default: 0, state_default: 50, invite: 50, kick: 50, ban: 50, redact: 50 }
+    return users
   }
 
   // The room looks like the Bot that leads it: the same picture the Bot shows in its own
@@ -167,7 +191,7 @@ export class Bridge {
     if (creator?.avatarMxc === undefined) return
     if (record.avatarMxc === creator.avatarMxc) return
     try {
-      await this.accounts.clientFor(creator).setRoomAvatar(record.matrixRoomId, creator.avatarMxc)
+      await this.sendState(record, '/state/m.room.avatar/', { url: creator.avatarMxc })
       record.avatarMxc = creator.avatarMxc
       await this.store.setRoom(groupId, record)
       this.log('room-avatar', { room_id: record.matrixRoomId, mxc: creator.avatarMxc })
@@ -176,16 +200,74 @@ export class Bridge {
     }
   }
 
-  async setPowerLevels(client, record, members) {
-    const users = {}
-    if (this.config.userMxid) users[this.config.userMxid] = 100
-    const creator = this.store.bot(record.creatorBotId)?.userId
-    for (const botId of members) {
-      const userId = this.store.bot(botId)?.userId
-      if (userId && userId !== creator) users[userId] = 50
+  // Sending room state needs power 50. The creator Bot should have it, but a room made
+  // before that was fixed can leave the creator at 0 while another member holds 50, so try
+  // the creator first and then every other member; the one that worked is remembered.
+  stateCandidates(record) {
+    const ids = [record.stateBotId, record.creatorBotId, ...(record.members ?? [])]
+      .filter((id, index, all) => id !== undefined && all.indexOf(id) === index)
+    return ids.map(botId => ({ botId, record: this.store.bot(botId) })).filter(entry => entry.record?.accessToken !== undefined)
+  }
+
+  async sendState(record, path, body) {
+    let last
+    for (const { botId, record: account } of this.stateCandidates(record)) {
+      try {
+        await this.accounts.clientFor(account).request('PUT', `/rooms/${encodeURIComponent(record.matrixRoomId)}${path}`, body)
+        if (record.stateBotId !== botId) {
+          record.stateBotId = botId
+          const groupId = Object.keys(this.store.rooms()).find(key => this.store.room(key) === record)
+          if (groupId !== undefined) await this.store.setRoom(groupId, record)
+        }
+        return { botId, account }
+      } catch (error) {
+        last = error
+        if (error?.status !== 403 && error?.errcode !== 'M_FORBIDDEN') throw error
+      }
     }
+    throw last ?? new Error('no Bot account in the room can send state')
+  }
+
+  // Finds a room one of the member accounts already joined whose name matches the group.
+  // The adoption starts at the current sequence, so old lines are not re-posted.
+  async adoptExistingRoom(room, members) {
+    const mapped = new Set(Object.values(this.store.rooms()).map(record => record.matrixRoomId))
+    for (const botId of members) {
+      const client = this.accounts.clientOf(botId)
+      if (client === undefined) continue
+      let joined = []
+      try {
+        joined = (await client.request('GET', '/joined_rooms')).joined_rooms ?? []
+      } catch {
+        continue
+      }
+      for (const matrixRoomId of joined) {
+        if (mapped.has(matrixRoomId)) continue
+        let name
+        try {
+          name = (await client.request('GET', `/rooms/${encodeURIComponent(matrixRoomId)}/state/m.room.name/`)).name
+        } catch {
+          continue
+        }
+        if (name !== room.name) continue
+        return {
+          matrixRoomId,
+          name: room.name,
+          creatorBotId: botId,
+          members,
+          cursor: typeof room.seq === 'number' ? room.seq : 0,
+          createdAt: Date.now(),
+          adopted: true,
+        }
+      }
+    }
+    return undefined
+  }
+
+  async setPowerLevels(client, record, members) {
+    const users = this.powerUsers(record.creatorBotId, members)
     try {
-      await client.request('PUT', `/rooms/${encodeURIComponent(record.matrixRoomId)}/state/m.room.power_levels/`, {
+      await this.sendState(record, '/state/m.room.power_levels/', {
         users,
         users_default: 0,
         events_default: 0,
@@ -221,7 +303,7 @@ export class Bridge {
       } catch (error) {
         this.log('join-failed', { group_id: roomId, room_id: record.matrixRoomId, bot_id: botId, message: error?.message ?? String(error) })
       }
-      await this.inviteUser(botId, record.matrixRoomId)
+      await this.inviteUser(botId, roomId, record.matrixRoomId)
     }
     record.members = members
     await this.store.setRoom(roomId, record)
@@ -385,18 +467,42 @@ export class Bridge {
   }
 
   // Each Bot that joins a room invites the user too, so the invite shows up even if the
-  // user was not around when the room was made. Joining an existing room is a no-op.
-  async inviteUser(botId, roomId) {
+  // user was not around when the room was made. A failed invite is retried with backoff
+  // and logged: silently swallowing it makes "we never added you" impossible to debug.
+  async inviteUser(botId, groupId, roomId) {
     const userMxid = this.config.userMxid
     if (!userMxid) return
+    const record = this.store.room(groupId)
+    const key = `${botId}:${userMxid}`
+    const previous = record?.invites?.[key]
+    if (previous?.nextAt !== undefined && Date.now() < previous.nextAt) return
     const client = this.accounts.clientOf(botId)
     if (client === undefined) return
     try {
       await client.invite(roomId, userMxid)
-    } catch (error) {
-      if (error?.errcode !== 'M_FORBIDDEN' && error?.status !== 403) {
-        this.log('invite-user-failed', { room_id: roomId, bot_id: botId, message: error?.message ?? String(error), errcode: error?.errcode })
+      if (previous !== undefined && record !== undefined) {
+        delete record.invites[key]
+        await this.store.setRoom(groupId, record)
       }
+      this.log('invited', { group_id: groupId, room_id: roomId, bot_id: botId, user: userMxid })
+    } catch (error) {
+      const message = error?.message ?? String(error)
+      // Already in the room is the normal case on every pass after the first.
+      if (/already in the room|already a member/i.test(message) || error?.errcode === 'M_BAD_STATE') {
+        if (previous !== undefined && record !== undefined) {
+          delete record.invites[key]
+          await this.store.setRoom(groupId, record)
+        }
+        return
+      }
+      const attempts = (previous?.attempts ?? 0) + 1
+      const nextAt = Date.now() + Math.min(120_000, 5_000 * 2 ** Math.min(attempts, 5))
+      if (record !== undefined) {
+        record.invites ??= {}
+        record.invites[key] = { attempts, nextAt, error: error?.errcode ?? message.slice(0, 120) }
+        await this.store.setRoom(groupId, record)
+      }
+      this.log('invite-user-failed', { group_id: groupId, room_id: roomId, bot_id: botId, attempts, next_at: nextAt, errcode: error?.errcode, status: error?.status, message })
     }
   }
 

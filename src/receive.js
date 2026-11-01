@@ -42,6 +42,10 @@ export class Receiver {
     this.loops = new Map()
     this.stopping = false
     this.socketPath = config.controlSocket
+    // Bridge accounts are never inbound. The store knows the Bots' own accounts; this set
+    // adds historical ones (@dsbridge, Dito's bot) so an old bridge still running on the
+    // same rooms cannot echo back in, even though it is not in the store.
+    this.ignoredSenders = new Set(Array.isArray(config.ignoredSenders) ? config.ignoredSenders : [])
   }
 
   /** Reconciles one reader loop per mirrored room; a room the bridge stops mirroring ends its loop. */
@@ -148,6 +152,36 @@ export class Receiver {
       if (event.content?.msgtype !== 'm.text' && event.content?.msgtype !== 'm.notice') continue
       const handled = this.store.room(groupId)?.handled ?? []
       if (typeof event.event_id === 'string' && handled.includes(event.event_id)) continue
+      // The bridge's own accounts are an echo, not a person: dropped before the allowlist so
+      // the log says "echo" instead of "not allowed" (see isBridgeAccount).
+      if (this.isBridgeAccount(event.sender)) {
+        this.log('ignored-sender', {
+          group_id: groupId,
+          room_id: matrixRoomId,
+          event_id: event.event_id ?? null,
+          sender: event.sender ?? null,
+          reason: this.ignoredSenders.has(event.sender) ? 'sender is a known bridge account' : 'sender is a DS Bot account',
+        })
+        const echo = this.store.room(groupId)
+        echo.handled = [...(echo.handled ?? []), event.event_id].filter(Boolean).slice(-HANDLED_KEPT)
+        await this.store.setRoom(groupId, echo)
+        continue
+      }
+      // Only the configured accounts may speak as a person here; anyone else in the room
+      // is dropped (and remembered, so a replay does not re-log it).
+      if (!this.allowed(event.sender)) {
+        this.log('skipped', {
+          group_id: groupId,
+          room_id: matrixRoomId,
+          event_id: event.event_id ?? null,
+          sender: event.sender ?? null,
+          reason: 'sender is not in allowedSenders',
+        })
+        const skipped = this.store.room(groupId)
+        skipped.handled = [...(skipped.handled ?? []), event.event_id].filter(Boolean).slice(-HANDLED_KEPT)
+        await this.store.setRoom(groupId, skipped)
+        continue
+      }
       const line = this.textOf(event, names)
       if (line === undefined) continue
       await this.post(groupId, line)
@@ -165,9 +199,17 @@ export class Receiver {
     }
   }
 
+  /** Whether this sender may speak as a person into the DS Bot group chat. */
+  allowed(userId) {
+    const list = this.config.allowedSenders
+    if (!Array.isArray(list) || list.length === 0) return false
+    return typeof userId === 'string' && list.includes(userId)
+  }
+
   /** A message written by a bridge account is the bridge's own echo; it never goes back in. */
   isBridgeAccount(userId) {
     if (typeof userId !== 'string') return true
+    if (this.ignoredSenders.has(userId)) return true
     return Object.values(this.store.bots()).some(record => record?.userId === userId)
   }
 

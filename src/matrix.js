@@ -57,9 +57,10 @@ export class MatrixClient {
     const initial_state = encrypted
       ? [{ type: 'm.room.encryption', state_key: '', content: { algorithm: 'm.megolm.v1.aes-sha2' } }]
       : []
-    // The creator must be at 100 from the start: a room created with an empty `users`
-    // map and users_default 0 cannot be administered by anyone, not even its creator.
-    const override = powerLevels ?? { users: {}, users_default: 0, invite: 50 }
+    // The creator must be at 100 from the start: with an explicit override the server does
+    // not add the creator to `users` by itself, and users_default 0 then leaves the room
+    // with nobody able to send state (that was the 403 on power_levels).
+    const override = powerLevels ?? { users: { [this.userId]: 100 }, users_default: 0, invite: 50 }
     return this.request('POST', '/createRoom', {
       name,
       ...(topic ? { topic } : {}),

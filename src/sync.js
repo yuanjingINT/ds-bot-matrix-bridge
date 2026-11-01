@@ -9,6 +9,7 @@ import { dirname } from 'node:path'
 import { JsonlLog } from './log.js'
 import { Bridge } from './bridge.js'
 import { Receiver } from './receive.js'
+import { InviteAccepter } from './invites.js'
 import { loadSettings } from './settings.js'
 
 const settings = loadSettings()
@@ -25,6 +26,8 @@ const config = {
 
 const bridge = new Bridge(config)
 const receiver = new Receiver({ store: bridge.store, accounts: bridge.accounts, config })
+const joiner = new InviteAccepter({ homeserverUrl: settings.homeserverUrl, tokenFile: settings.userTokenFile, log: config.log })
+const AUTOJOIN_EVERY_MS = 10_000
 const once = process.argv.includes('--once')
 
 let pluginReady = false
@@ -53,8 +56,14 @@ const checkPlugin = async () => {
   return false
 }
 
+let lastAutojoin = 0
 const tick = async () => {
   await bridge.tick()
+  // Accepting the user's invites is cheap but not free; every 10s is enough.
+  if (Date.now() - lastAutojoin >= AUTOJOIN_EVERY_MS) {
+    lastAutojoin = Date.now()
+    await joiner.accept()
+  }
   if (!settings.receiveEnabled) return
   if (!(await checkPlugin())) return
   await receiver.reconcile(Object.keys(bridge.store.rooms()).map(id => ({ id })))

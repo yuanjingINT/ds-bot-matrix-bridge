@@ -7,5 +7,12 @@
   "pollMs": 1500,
   "encrypted": false,
   "onGroupDeleted": "notify",
-  "registrationTokenFile": "/home/yuanjing/.dsh/bot/workspace/.secrets/matrix_registration_token"
+  "registrationTokenFile": "/home/yuanjing/.dsh/bot/workspace/.secrets/matrix_registration_token",
+  "ignoredSenders": [
+    "@dsbridge:tuxai.org",
+    "@dito:dito.asia"
+  ],
+  "allowedSenders": [
+    "@yuanjing:tuxai.org"
+  ]
 }

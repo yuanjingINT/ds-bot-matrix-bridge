@@ -1,0 +1,68 @@
+// Only the configured accounts may speak into a DS Bot group chat from Matrix.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { Receiver } from '../src/receive.js'
+
+const USER = '@yuanjing:tuxai.org'
+const ROOM = '!room:tuxai.org'
+
+function makeReceiver() {
+  const room = { matrixRoomId: ROOM, handled: [] }
+  const store = {
+    room: () => room,
+    setRoom: async () => {},
+    bots: () => ({}),
+  }
+  const events = []
+  const receiver = new Receiver({
+    store,
+    accounts: {},
+    config: {
+      userMxid: USER,
+      allowedSenders: [USER],
+      controlSocket: '/nonexistent',
+      log: (event, fields) => events.push({ event, ...fields }),
+    },
+  })
+  const delivered = []
+  receiver.post = async (groupId, text) => { delivered.push({ groupId, text }) }
+  return { receiver, delivered, events, room }
+}
+
+const message = (id, sender, body) => ({ type: 'm.room.message', event_id: id, sender, content: { msgtype: 'm.text', body } })
+
+test('a message from the allowed account is delivered as the user', async () => {
+  const { receiver, delivered, events } = makeReceiver()
+  await receiver.deliver('g1', ROOM, {
+    rooms: { join: { [ROOM]: { timeline: { events: [message('$a', USER, '你好')] } } } },
+  })
+  assert.deepEqual(delivered, [{ groupId: 'g1', text: '你好' }])
+  assert.ok(events.some(e => e.event === 'received' && e.sender === USER))
+})
+
+test('a message from anyone else is dropped and logged as skipped', async () => {
+  const { receiver, delivered, events, room } = makeReceiver()
+  await receiver.deliver('g1', ROOM, {
+    rooms: {
+      join: {
+        [ROOM]: {
+          state: { events: [{ type: 'm.room.member', state_key: '@verify-a:tuxai.org', content: { displayname: '验收A' } }] },
+          timeline: { events: [message('$b', '@verify-a:tuxai.org', '我是验收A')] },
+        },
+      },
+    },
+  })
+  assert.equal(delivered.length, 0, 'nothing is injected')
+  const skipped = events.find(e => e.event === 'skipped')
+  assert.ok(skipped !== undefined)
+  assert.equal(skipped.sender, '@verify-a:tuxai.org')
+  assert.deepEqual(room.handled, ['$b'], 'the event is remembered so a replay does not re-log it')
+})
+
+test('a replay of the same batch delivers nothing twice', async () => {
+  const { receiver, delivered } = makeReceiver()
+  const batch = { rooms: { join: { [ROOM]: { timeline: { events: [message('$c', USER, '一次')] } } } } }
+  await receiver.deliver('g1', ROOM, batch)
+  await receiver.deliver('g1', ROOM, batch)
+  assert.equal(delivered.length, 1)
+})

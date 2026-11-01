@@ -298,7 +298,10 @@ test('the creator and the user are admins from the room\'s first event', async (
     await new Bridge(config).tick()
     const room = [...mock.rooms.values()][0]
     assert.equal(room.powerLevels.users[USER], 100)
-    assert.equal(room.powerLevels.users['@chief:tuxai.test'], undefined, 'the creator is implicit 100 and never listed')
+    // The creator is 100 either implicitly (unlisted) or explicitly; never 50, which the
+    // roomserver refuses outright and leaves the room unadministrable.
+    assert.notEqual(room.powerLevels.users['@chief:tuxai.test'], 50)
+    assert.ok([undefined, 100].includes(room.powerLevels.users['@chief:tuxai.test']))
     assert.equal(room.powerLevels.users['@yanshou:tuxai.test'], 50)
     assert.equal(room.powerLevels.users_default, 0)
   } finally {

@@ -1,7 +1,7 @@
 // The bridge's own saved state: which Matrix account each Bot got, which Matrix room
 // each group maps to, and how far each room has been mirrored. It holds access tokens,
 // so the file is written 0600 and never leaves the machine.
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { open, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -55,7 +55,12 @@ export class BridgeStore {
       parsed = JSON.parse(readFileSync(this.path, 'utf8'))
     } catch (error) {
       if (error?.code !== 'ENOENT') throw new Error(`cannot read ${this.path}: ${error.message}`)
-      parsed = undefined
+      // Missing or unreadable state: take the backup rather than rebuilding every room.
+      try {
+        parsed = JSON.parse(readFileSync(`${this.path}.bak`, 'utf8'))
+      } catch {
+        parsed = undefined
+      }
     }
     this.data = {
       ...JSON.parse(JSON.stringify(EMPTY)),
@@ -89,6 +94,9 @@ export class BridgeStore {
       }
       chmodSync(temp, 0o600)
       await rename(temp, this.path)
+      // A second copy: losing bridge.json must never mean "no rooms exist, create new
+      // ones". load() restores from it instead of starting empty.
+      try { copyFileSync(this.path, `${this.path}.bak`) } catch { /* backup is best effort */ }
       try {
         const dir = await open(dirname(this.path), 'r')
         try { await dir.sync() } finally { await dir.close() }

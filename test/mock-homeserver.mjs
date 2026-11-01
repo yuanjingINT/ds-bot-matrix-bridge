@@ -22,9 +22,13 @@ export async function startMockHomeserver({ serverName = 'tuxai.test', registrat
   const fail = (res, status, errcode, error) => send(res, status, { errcode, error })
 
   const server = createServer(async (req, res) => {
-    let body = ''
-    for await (const chunk of req) body += chunk
-    const json = body === '' ? {} : JSON.parse(body)
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const raw = Buffer.concat(chunks)
+    // Media upload sends bytes, not JSON: parsing those as JSON would throw here instead of
+    // answering the request the bridge actually made.
+    const isJson = String(req.headers['content-type'] ?? '').includes('application/json')
+    const json = isJson && raw.length > 0 ? JSON.parse(raw.toString('utf8')) : {}
     const url = new URL(req.url, 'http://mock')
     const path = url.pathname.replace(/^\/_matrix\/client\/v3/, '')
     log.push({ method: req.method, path })
@@ -54,11 +58,21 @@ export async function startMockHomeserver({ serverName = 'tuxai.test', registrat
 
     if (path.startsWith('/profile/') && req.method === 'PUT') {
       const userId = decodeURIComponent(path.split('/')[2])
-      users.get(userId).displayname = json.displayname
+      const user = users.get(userId)
+      if (user === undefined) return fail(res, 404, 'M_NOT_FOUND', 'Unknown user')
+      if (json.displayname !== undefined) user.displayname = json.displayname
+      if (json.avatar_url !== undefined) user.avatarUrl = json.avatar_url
       return send(res, 200, {})
     }
 
     if (me === undefined) return fail(res, 401, 'M_UNKNOWN_TOKEN', 'Unknown access token')
+
+    // The bridge uploads a Bot's avatar through the media API, which lives outside
+    // /_matrix/client/v3.
+    if (req.method === 'POST' && path === '/_matrix/media/v3/upload') {
+      counters.event += 1
+      return send(res, 200, { content_uri: `mxc://${serverName}/mock${counters.event}` })
+    }
 
     if (req.method === 'POST' && path === '/createRoom') {
       counters.room += 1
