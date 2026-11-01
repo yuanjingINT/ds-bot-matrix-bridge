@@ -28,6 +28,8 @@ const receiver = new Receiver({ store: bridge.store, accounts: bridge.accounts, 
 const once = process.argv.includes('--once')
 
 let pluginReady = false
+let blockedLoggedAt = 0
+const BLOCKED_LOG_EVERY_MS = 60_000
 const checkPlugin = async () => {
   const health = await receiver.health()
   if (health?.ok === true) {
@@ -35,7 +37,18 @@ const checkPlugin = async () => {
     pluginReady = true
     return true
   }
-  if (pluginReady) config.log('receive-unavailable', { socket: settings.controlSocket, reason: 'the DSH plugin stopped answering' })
+  // Without the plugin the bridge can only forward. Say that in the log, with the reason,
+  // instead of silently never producing a receive-start line.
+  const now = Date.now()
+  if (pluginReady || now - blockedLoggedAt >= BLOCKED_LOG_EVERY_MS) {
+    if (pluginReady) config.log('receive-unavailable', { socket: settings.controlSocket, reason: health?.reason ?? 'the DSH plugin stopped answering' })
+    else config.log('receive-blocked', {
+      socket: settings.controlSocket,
+      reason: health?.reason ?? 'the DSH plugin is not mounted',
+      hint: 'install the matrix-bridge-host plugin in the DSH profile (README, step 2) and restart the app',
+    })
+    blockedLoggedAt = now
+  }
   pluginReady = false
   return false
 }

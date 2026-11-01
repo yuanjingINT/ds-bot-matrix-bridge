@@ -129,7 +129,20 @@ export class Accounts {
     record.displayName = name
     record.name = name
     await this.store.setBot(botId, record)
-    this.config.log('renamed', { botId, userId: record.userId, name })
+    // Each room also carries its own nickname for this account; a rename that skipped it
+    // would show the old name in every mirrored room.
+    let rooms = 0
+    for (const [groupId, room] of Object.entries(this.store.rooms())) {
+      if (room.matrixRoomId === undefined || room.goneAt !== undefined) continue
+      if (!(room.members ?? []).includes(botId)) continue
+      try {
+        await this.setRoomNick(botId, room.matrixRoomId, name)
+        rooms += 1
+      } catch (error) {
+        this.config.log('nick-failed', { botId, group_id: groupId, room_id: room.matrixRoomId, message: error?.message ?? String(error) })
+      }
+    }
+    this.config.log('renamed', { botId, userId: record.userId, name, rooms })
   }
 
   /** The Bot's own nickname inside one room, so a per-room name wins over the profile. */

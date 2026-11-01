@@ -336,3 +336,24 @@ test('a rebuilt room tombstones the old one instead of orphaning it', async () =
     await mock.close()
   }
 })
+
+test('a rename also changes the nickname inside each mirrored room', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const { dir, statePath } = await home(teamWith([bot('b1', '桥接')], group('g1', '群', ['b1'], [])))
+    const paths = { dir, statePath }
+    await new Bridge(configFor(mock, paths)).tick()
+    const room = [...mock.rooms.values()][0]
+
+    await writeFile(statePath, JSON.stringify(teamWith([bot('b1', '巡检员')], group('g1', '群', ['b1'], [])), null, 1))
+    await new Bridge(configFor(mock, paths)).tick()
+
+    const member = room.state.get('m.room.member|@qiaojie:tuxai.test')
+    assert.ok(member !== undefined, 'the room keeps a member event for the Bot')
+    assert.equal(member.displayname, '巡检员')
+    assert.equal(mock.users.get('@qiaojie:tuxai.test').displayname, '巡检员')
+    assert.equal(mock.users.has('@xunjianyuan:tuxai.test'), false, 'a rename never creates an account')
+  } finally {
+    await mock.close()
+  }
+})

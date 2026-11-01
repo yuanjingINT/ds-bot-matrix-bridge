@@ -210,18 +210,32 @@ export class Receiver {
     })
   }
 
-  /** Whether the DSH plugin is up; the bridge refuses to start receiving without it. */
+  /**
+   * Whether the DSH plugin is up; the bridge refuses to start receiving without it. A
+   * failure comes back as {ok:false, reason} rather than undefined, so the log can say why
+   * receiving is off instead of only that it is.
+   */
   health() {
     return new Promise((resolve) => {
       const request = httpRequest({ socketPath: this.socketPath, path: '/health', method: 'GET', timeout: 3_000 }, (response) => {
         const chunks = []
         response.on('data', chunk => chunks.push(chunk))
         response.on('end', () => {
-          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch { resolve(undefined) }
+          const body = Buffer.concat(chunks).toString('utf8')
+          if (response.statusCode !== 200) {
+            resolve({ ok: false, reason: `control socket answered ${response.statusCode}: ${body.slice(0, 200)}` })
+            return
+          }
+          try {
+            const parsed = JSON.parse(body)
+            resolve(parsed?.ok === true ? parsed : { ok: false, reason: `unexpected health body: ${body.slice(0, 200)}` })
+          } catch {
+            resolve({ ok: false, reason: `health is not JSON: ${body.slice(0, 200)}` })
+          }
         })
       })
-      request.on('timeout', () => { request.destroy(); resolve(undefined) })
-      request.on('error', () => resolve(undefined))
+      request.on('timeout', () => { request.destroy(); resolve({ ok: false, reason: 'the control socket did not answer in time' }) })
+      request.on('error', (error) => resolve({ ok: false, reason: `${error?.code ?? 'error'}: ${error?.message ?? String(error)}` }))
       request.end()
     })
   }
