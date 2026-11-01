@@ -70,6 +70,7 @@ export async function startMockHomeserver({ serverName = 'tuxai.test', registrat
         members: new Set([me]),
         events: [],
         state: new Map(),
+        powerLevels: json.power_level_content_override ?? null,
       }
       rooms.set(roomId, room)
       return send(res, 200, { room_id: roomId })

@@ -1,0 +1,5 @@
+# Mounts the bridge's DS Bot-side hook (see plugin/index.js): a private UNIX socket
+# that turns a Matrix room message into a user message in a DS Bot group chat.
+- insert:
+    - id: matrix-bridge-host
+      name: matrix-bridge-host

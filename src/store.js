@@ -2,7 +2,7 @@
 // each group maps to, and how far each room has been mirrored. It holds access tokens,
 // so the file is written 0600 and never leaves the machine.
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { rename, writeFile } from 'node:fs/promises'
+import { open, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 const EMPTY = {
@@ -69,14 +69,27 @@ export class BridgeStore {
   // Every mutation goes through save(), which writes the whole file atomically: a crash
   // leaves either the old state or the new one, so a cursor never points past a message
   // that was not sent.
+  // fsync both the file and its directory: a cursor that survived a power cut must never
+  // point behind an event the homeserver already accepted, and must never point past one
+  // it did not.
   save() {
     const snapshot = JSON.stringify(this.data, null, 1)
     const run = this.writing.then(async () => {
       mkdirSync(dirname(this.path), { recursive: true })
       const temp = `${this.path}.tmp`
-      await writeFile(temp, snapshot, { mode: 0o600 })
+      const handle = await open(temp, 'w', 0o600)
+      try {
+        await handle.writeFile(snapshot)
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
       chmodSync(temp, 0o600)
       await rename(temp, this.path)
+      try {
+        const dir = await open(dirname(this.path), 'r')
+        try { await dir.sync() } finally { await dir.close() }
+      } catch { /* some filesystems refuse a directory fsync; the file sync already ran */ }
     })
     this.writing = run.catch(() => {})
     return run

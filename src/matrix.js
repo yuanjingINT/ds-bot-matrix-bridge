@@ -53,10 +53,13 @@ export class MatrixClient {
     return this.request('PUT', `/rooms/${id}/send/m.room.message/${tx}`, content, { timeoutMs: 30_000 })
   }
 
-  async createRoom({ name, topic, invite = [], encrypted = false }) {
+  async createRoom({ name, topic, invite = [], encrypted = false, powerLevels }) {
     const initial_state = encrypted
       ? [{ type: 'm.room.encryption', state_key: '', content: { algorithm: 'm.megolm.v1.aes-sha2' } }]
       : []
+    // The creator must be at 100 from the start: a room created with an empty `users`
+    // map and users_default 0 cannot be administered by anyone, not even its creator.
+    const override = powerLevels ?? { users: {}, users_default: 0, invite: 50 }
     return this.request('POST', '/createRoom', {
       name,
       ...(topic ? { topic } : {}),
@@ -64,7 +67,7 @@ export class MatrixClient {
       preset: 'private_chat',
       visibility: 'private',
       initial_state,
-      power_level_content_override: { users: {}, users_default: 0, invite: 50 },
+      power_level_content_override: override,
     }, { timeoutMs: 30_000 })
   }
 

@@ -114,6 +114,7 @@ export class Bridge {
       topic: `DS Bot 群聊 · ${room.name}`,
       invite,
       encrypted: this.config.encrypted,
+      powerLevels: this.powerLevelsFor(creatorId, members),
     })
     const next = {
       matrixRoomId: created.room_id,
@@ -132,16 +133,32 @@ export class Bridge {
       } catch (error) {
         this.log('join-failed', { group_id: room.id, room_id: next.matrixRoomId, bot_id: botId, message: error?.message ?? String(error), errcode: error?.errcode })
       }
+      await this.inviteUser(botId, next.matrixRoomId)
     }
     return next
+  }
+
+  // The user gets 100, every member Bot 50. The room's creator is left out on purpose:
+  // Matrix gives the creator 100 implicitly, and listing it (especially at 50) makes the
+  // roomserver refuse the whole event with 403, leaving the room unadministrable.
+  powerLevelsFor(creatorId, members) {
+    const users = {}
+    if (this.config.userMxid) users[this.config.userMxid] = 100
+    const creator = this.store.bot(creatorId)?.userId
+    for (const botId of members) {
+      const userId = this.store.bot(botId)?.userId
+      if (userId && userId !== creator) users[userId] = 50
+    }
+    return { users, users_default: 0, events_default: 0, state_default: 50, invite: 50, kick: 50, ban: 50, redact: 50 }
   }
 
   async setPowerLevels(client, record, members) {
     const users = {}
     if (this.config.userMxid) users[this.config.userMxid] = 100
+    const creator = this.store.bot(record.creatorBotId)?.userId
     for (const botId of members) {
       const userId = this.store.bot(botId)?.userId
-      if (userId) users[userId] = 50
+      if (userId && userId !== creator) users[userId] = 50
     }
     try {
       await client.request('PUT', `/rooms/${encodeURIComponent(record.matrixRoomId)}/state/m.room.power_levels/`, {
@@ -180,6 +197,7 @@ export class Bridge {
       } catch (error) {
         this.log('join-failed', { group_id: roomId, room_id: record.matrixRoomId, bot_id: botId, message: error?.message ?? String(error) })
       }
+      await this.inviteUser(botId, record.matrixRoomId)
     }
     record.members = members
     await this.store.setRoom(roomId, record)
@@ -240,11 +258,17 @@ export class Bridge {
     }
     for (const line of (room.log ?? [])) {
       if (typeof line.seq !== 'number' || line.seq <= cursor) continue
+      // Already mirrored on an earlier run (dedupe table, e.g. after restoring a backup
+      // of the state): skip it rather than trust the cursor alone.
+      if (record.recent?.[String(line.seq)] !== undefined) {
+        cursor = line.seq
+        record.cursor = cursor
+        await this.store.setRoom(room.id, record)
+        continue
+      }
       const sent = await this.sendLine(room, record, line, team)
       if (sent === undefined) return
       cursor = line.seq
-      record.cursor = cursor
-      await this.store.setRoom(room.id, record)
     }
   }
 
@@ -259,12 +283,26 @@ export class Bridge {
       ? renderEventLine({ room, line, config: this.config })
       : renderLine({ room, line, text: await fullLineText(this.config.home, room.id, line), config: this.config })
     const txnId = txnIdOf(room.id, line.seq)
+    // A send that was in flight when the process died is picked up again with the same
+    // transaction id: the homeserver returns the event it already made, so nothing is
+    // posted twice.
+    const recovering = record.pending?.seq === line.seq && record.pending?.txn === txnId
+    record.pending = { seq: line.seq, txn: txnId, at: Date.now() }
+    await this.store.setRoom(room.id, record)
     const tSent = Date.now()
     try {
       const response = await client.sendMessage(record.matrixRoomId, txnId, content)
       const tAck = Date.now()
       this.sent += 1
-      this.log('sent', {
+      record.cursor = line.seq
+      delete record.pending
+      record.recent ??= {}
+      record.recent[String(line.seq)] = response.event_id ?? null
+      const keep = Object.keys(record.recent)
+      for (const key of keep.slice(0, Math.max(0, keep.length - 50))) delete record.recent[key]
+      await this.store.setRoom(room.id, record)
+      this.log(recovering ? 'resent' : 'sent', {
+        recovered: recovering,
         group_id: room.id,
         room_id: record.matrixRoomId,
         seq: line.seq,
@@ -289,6 +327,22 @@ export class Bridge {
         status: error?.status,
       })
       return undefined
+    }
+  }
+
+  // Each Bot that joins a room invites the user too, so the invite shows up even if the
+  // user was not around when the room was made. Joining an existing room is a no-op.
+  async inviteUser(botId, roomId) {
+    const userMxid = this.config.userMxid
+    if (!userMxid) return
+    const client = this.accounts.clientOf(botId)
+    if (client === undefined) return
+    try {
+      await client.invite(roomId, userMxid)
+    } catch (error) {
+      if (error?.errcode !== 'M_FORBIDDEN' && error?.status !== 403) {
+        this.log('invite-user-failed', { room_id: roomId, bot_id: botId, message: error?.message ?? String(error), errcode: error?.errcode })
+      }
     }
   }
 

@@ -252,3 +252,56 @@ test('a long line is mirrored whole from its own file', async () => {
     await mock.close()
   }
 })
+
+test('a send that was in flight at a crash is resumed with the same transaction id', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const { dir, statePath } = await home(teamWith(
+      [bot('b1', 'Chief')],
+      group('g1', '群', ['b1'], [{ seq: 1, who: 'Chief', botId: 'b1', text: '一' }]),
+    ))
+    const config = configFor(mock, { dir, statePath })
+    await new Bridge(config).tick()
+    const roomId = [...mock.rooms.keys()][0]
+    assert.equal(mock.eventsIn(roomId).length, 1)
+
+    // Rewind the saved state to what a process killed between "sent" and "cursor saved"
+    // leaves behind: the event exists, the cursor does not know about it.
+    const saved = JSON.parse(await readFile(config.statePath, 'utf8'))
+    const record = saved.rooms.g1
+    record.cursor = 0
+    delete record.recent
+    record.pending = { seq: 1, txn: 'dsbot.g1.1', at: Date.now() }
+    await writeFile(config.statePath, JSON.stringify(saved))
+
+    const events = []
+    const bridge = new Bridge(configFor(mock, { dir, statePath }, { log: (event, fields) => events.push({ event, ...fields }) }))
+    await bridge.tick()
+    assert.equal(mock.eventsIn(roomId).length, 1, 'the room still holds one copy')
+    assert.ok(events.some(e => e.event === 'resent' && e.recovered === true), 'the resume is logged as a resend')
+    const after = JSON.parse(await readFile(config.statePath, 'utf8'))
+    assert.equal(after.rooms.g1.cursor, 1)
+    assert.equal(after.rooms.g1.pending, undefined)
+  } finally {
+    await mock.close()
+  }
+})
+
+test('the creator and the user are admins from the room\'s first event', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const { dir, statePath } = await home(teamWith(
+      [bot('b1', 'Chief'), bot('b2', '验收')],
+      group('g1', '群', ['b1', 'b2'], []),
+    ))
+    const config = configFor(mock, { dir, statePath })
+    await new Bridge(config).tick()
+    const room = [...mock.rooms.values()][0]
+    assert.equal(room.powerLevels.users[USER], 100)
+    assert.equal(room.powerLevels.users['@chief:tuxai.test'], undefined, 'the creator is implicit 100 and never listed')
+    assert.equal(room.powerLevels.users['@yanshou:tuxai.test'], 50)
+    assert.equal(room.powerLevels.users_default, 0)
+  } finally {
+    await mock.close()
+  }
+})

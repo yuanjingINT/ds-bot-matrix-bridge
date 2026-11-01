@@ -1,0 +1,19 @@
+{
+  "name": "matrix-bridge-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DS Bot side hook for the Matrix bridge: a private control socket that turns Matrix room messages into user messages in a DS Bot group chat",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
