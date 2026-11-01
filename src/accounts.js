@@ -4,6 +4,7 @@
 import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { avatarFor, lookOf } from './avatar.js'
 import { MatrixClient } from './matrix.js'
 import { freeLocalpart } from './slug.js'
 
@@ -43,12 +44,36 @@ export class Accounts {
     const existing = this.store.bot(bot.id)
     if (existing !== undefined && existing.userId && existing.accessToken) {
       if (existing.name !== bot.name) await this.rename(bot.id, bot.name)
-      return existing
+      await this.syncLook(bot.id, bot)
+      return this.store.bot(bot.id)
     }
     const record = await this.register(bot)
     await this.store.setBot(bot.id, record)
     this.config.log('account', { bot: bot.name, botId: bot.id, userId: record.userId, localpart: record.localpart })
-    return record
+    await this.syncLook(bot.id, bot)
+    return this.store.bot(bot.id)
+  }
+
+  /**
+   * The Bot's avatar, in Matrix as in DS Bot: its own picture when it has one, else a
+   * square in its ink. Uploaded once per look — `avatarLook` is what was uploaded last.
+   */
+  async syncLook(botId, bot) {
+    const record = this.store.bot(botId)
+    if (record === undefined) return
+    const look = lookOf(bot)
+    if (record.avatarLook === look && record.avatarMxc !== undefined) return
+    try {
+      const { bytes, mime, kind } = avatarFor(bot)
+      const mxc = await this.clientFor(record).uploadMedia(bytes, mime, `${record.localpart ?? 'bot'}.png`)
+      await this.clientFor(record).setProfileAvatar(mxc)
+      record.avatarMxc = mxc
+      record.avatarLook = look
+      await this.store.setBot(botId, record)
+      this.config.log('avatar', { botId, userId: record.userId, mxc, kind, bytes: bytes.length })
+    } catch (error) {
+      this.config.log('avatar-failed', { botId, userId: record.userId, message: error?.message ?? String(error), errcode: error?.errcode })
+    }
   }
 
   async register(bot) {
@@ -84,7 +109,6 @@ export class Accounts {
       userId: response.user_id,
       deviceId: response.device_id,
       accessToken: response.access_token,
-      password,
       name: bot.name,
       displayName: bot.name,
       createdAt: Date.now(),
@@ -112,11 +136,12 @@ export class Accounts {
   async setRoomNick(botId, roomId, name) {
     const record = this.store.bot(botId)
     if (record === undefined) return
-    await this.clientFor(record).request(
-      'PUT',
-      `/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent(record.userId)}`,
-      { membership: 'join', displayname: name },
-    )
+    // The member event carries the room's own copy of the name and the avatar, so the
+    // room shows the Bot's look even before any client has read its profile.
+    await this.clientFor(record).setMemberLook(roomId, record.userId, {
+      displayname: name,
+      ...(record.avatarMxc === undefined ? {} : { avatarUrl: record.avatarMxc }),
+    })
   }
 
   async join(botId, roomId) {

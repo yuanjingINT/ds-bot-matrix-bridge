@@ -90,4 +90,40 @@ export class MatrixClient {
   async setRoomName(roomId, name) {
     await this.request('PUT', `/rooms/${encodeURIComponent(roomId)}/state/m.room.name/`, { name })
   }
+
+  // Media upload lives outside /_matrix/client/v3: continuwuity only answers the older
+  // /_matrix/media/v3 path (the /_matrix/client/v1 one is M_UNRECOGNIZED there).
+  async uploadMedia(bytes, mime, filename = 'avatar.png') {
+    const url = new URL(`${this.homeserverUrl}/_matrix/media/v3/upload`)
+    url.searchParams.set('filename', filename)
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.accessToken}`, 'content-type': mime },
+      body: bytes,
+      signal: AbortSignal.timeout(30_000),
+    })
+    const text = await response.text()
+    let parsed
+    try { parsed = text === '' ? {} : JSON.parse(text) } catch { parsed = { raw: text.slice(0, 300) } }
+    if (!response.ok) throw new MatrixError('POST', '/_matrix/media/v3/upload', response.status, parsed)
+    if (typeof parsed.content_uri !== 'string') throw new MatrixError('POST', '/_matrix/media/v3/upload', 200, { error: 'no content_uri in the answer' })
+    return parsed.content_uri
+  }
+
+  async setProfileAvatar(mxc) {
+    await this.request('PUT', `/profile/${encodeURIComponent(this.userId)}/avatar_url`, { avatar_url: mxc })
+  }
+
+  async setRoomAvatar(roomId, mxc) {
+    await this.request('PUT', `/rooms/${encodeURIComponent(roomId)}/state/m.room.avatar/`, { url: mxc })
+  }
+
+  // A member event replaces the whole membership content, so the nickname goes back in.
+  async setMemberLook(roomId, userId, { displayname, avatarUrl }) {
+    await this.request('PUT', `/rooms/${encodeURIComponent(roomId)}/state/m.room.member/${encodeURIComponent(userId)}`, {
+      membership: 'join',
+      ...(displayname === undefined ? {} : { displayname }),
+      ...(avatarUrl === undefined ? {} : { avatar_url: avatarUrl }),
+    })
+  }
 }

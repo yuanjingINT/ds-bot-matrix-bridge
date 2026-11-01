@@ -1,12 +1,12 @@
 [Unit]
-Description=DS Bot → Matrix bridge
+Description=DS Bot ↔ Matrix bridge
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=%h/.dsh/bot/workspace/matrix-bridge
-ExecStart=/usr/bin/node %h/.dsh/bot/workspace/matrix-bridge/src/index.js
+ExecStart=/usr/bin/node %h/.dsh/bot/workspace/matrix-bridge/src/sync.js
 Restart=always
 RestartSec=3
 # The bridge needs the user's home for ~/.dsh/bot/state.json and the 600 token file.

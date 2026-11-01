@@ -91,6 +91,7 @@ export class Bridge {
     if (record?.matrixRoomId && record.goneAt === undefined) {
       if (record.name !== room.name) await this.renameRoom(room.id, record, room.name)
       await this.ensureMembers(room.id, record, members)
+      await this.syncRoomAvatar(room.id, record, record.creatorBotId)
       return record
     }
     // A group that comes back after being deleted (same id is unlikely) or that the
@@ -116,6 +117,11 @@ export class Bridge {
       encrypted: this.config.encrypted,
       powerLevels: this.powerLevelsFor(creatorId, members),
     })
+    if (record?.matrixRoomId && record.matrixRoomId !== created.room_id) {
+      // The group came back (or the room had to be rebuilt): migrate the old room instead
+      // of abandoning it, so the user's client follows the pointer.
+      await this.upgradeRoom(record.matrixRoomId, created.room_id, record.members ?? members)
+    }
     const next = {
       matrixRoomId: created.room_id,
       name: room.name,
@@ -127,6 +133,7 @@ export class Bridge {
     await this.store.setRoom(room.id, next)
     this.log('room-created', { group_id: room.id, group: room.name, room_id: created.room_id, creator: creator.userId, encrypted: this.config.encrypted })
     await this.setPowerLevels(client, next, members)
+    await this.syncRoomAvatar(room.id, next, creatorId)
     for (const botId of others) {
       try {
         await this.accounts.join(botId, next.matrixRoomId)
@@ -150,6 +157,23 @@ export class Bridge {
       if (userId && userId !== creator) users[userId] = 50
     }
     return { users, users_default: 0, events_default: 0, state_default: 50, invite: 50, kick: 50, ban: 50, redact: 50 }
+  }
+
+  // The room looks like the Bot that leads it: the same picture the Bot shows in its own
+  // account, so a group is recognisable in the room list without opening it.
+  async syncRoomAvatar(groupId, record, creatorBotId) {
+    if (record?.matrixRoomId === undefined || creatorBotId === undefined) return
+    const creator = this.store.bot(creatorBotId)
+    if (creator?.avatarMxc === undefined) return
+    if (record.avatarMxc === creator.avatarMxc) return
+    try {
+      await this.accounts.clientFor(creator).setRoomAvatar(record.matrixRoomId, creator.avatarMxc)
+      record.avatarMxc = creator.avatarMxc
+      await this.store.setRoom(groupId, record)
+      this.log('room-avatar', { room_id: record.matrixRoomId, mxc: creator.avatarMxc })
+    } catch (error) {
+      this.log('room-avatar-failed', { room_id: record.matrixRoomId, message: error?.message ?? String(error) })
+    }
   }
 
   async setPowerLevels(client, record, members) {
@@ -201,6 +225,36 @@ export class Bridge {
     }
     record.members = members
     await this.store.setRoom(roomId, record)
+  }
+
+  // Matrix's own migration semantics: m.room.tombstone in the old room names the
+  // replacement, clients then show "this room has been upgraded → open the new one".
+  // Each Bot that is still in the old room posts it (the room's creator first) and leaves.
+  async upgradeRoom(oldRoomId, newRoomId, botIds, note) {
+    if (!oldRoomId || !newRoomId || oldRoomId === newRoomId) return
+    const body = note ?? '这个群对应的房间已重建，请到新房间继续。'
+    const creator = Object.values(this.store.rooms()).find(room => room.matrixRoomId === oldRoomId)?.creatorBotId
+    const ordered = [...new Set([creator, ...botIds].filter(Boolean))]
+    for (const botId of ordered) {
+      const account = this.store.bot(botId)
+      if (account === undefined) continue
+      const client = this.accounts.clientFor(account)
+      try {
+        await client.request('PUT', `/rooms/${encodeURIComponent(oldRoomId)}/state/m.room.tombstone/`, {
+          body,
+          replacement_room: newRoomId,
+        })
+        this.log('room-upgraded', { old_room_id: oldRoomId, new_room_id: newRoomId, by: account.userId })
+      } catch (error) {
+        this.log('room-upgrade-failed', { old_room_id: oldRoomId, new_room_id: newRoomId, by: account.userId, message: error?.message ?? String(error), errcode: error?.errcode })
+        continue
+      }
+      try {
+        await this.accounts.leave(botId, oldRoomId)
+      } catch (error) {
+        this.log('leave-failed', { room_id: oldRoomId, bot_id: botId, message: error?.message ?? String(error) })
+      }
+    }
   }
 
   async renameRoom(roomId, record, name) {

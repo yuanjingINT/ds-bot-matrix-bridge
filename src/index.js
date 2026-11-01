@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { loadEnv } from './env.js'
 import { JsonlLog } from './log.js'
 import { Bridge } from './bridge.js'
+import { acquireLock } from './lock.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 loadEnv(process.env.MATRIX_BRIDGE_ENV ?? join(root, '.env'))
@@ -61,6 +62,7 @@ const config = {
   accountsPath: join(root, 'state', 'accounts.json'),
   cryptoDir: join(root, 'state', 'crypto'),
   pollMs: Number(process.env.MATRIX_BRIDGE_POLL_MS ?? fileConfig.pollMs ?? 2000),
+  activePollMs: Number(process.env.MATRIX_BRIDGE_ACTIVE_POLL_MS ?? fileConfig.activePollMs ?? 500),
   encrypted: fileConfig.encrypted === true,
   onGroupDeleted: fileConfig.onGroupDeleted ?? 'notify',
   log: (event, fields) => {
@@ -72,9 +74,11 @@ const config = {
 }
 
 const bridge = new Bridge(config)
+const releaseLock = acquireLock(join(root, 'state', 'bridge.lock'))
 
 if (once) {
-  await bridge.tick()
+  await schedule()
+  releaseLock()
   process.exit(0)
 }
 
@@ -83,9 +87,10 @@ let closed = false
 const stop = async (signal) => {
   if (closed) return
   closed = true
-  clearInterval(timer)
+  clearTimeout(timer)
   watcher?.close()
   await bridge.current
+  releaseLock()
   config.log('stopped', { signal })
   process.exit(0)
 }
@@ -106,7 +111,17 @@ try {
   config.log('watch-failed', { message: error?.message ?? String(error), path: teamStatePath })
 }
 
-timer = setInterval(() => void bridge.tick(), config.pollMs)
+// Polling is adaptive: after a send, look again quickly, then back off while the team is
+// quiet. The file watcher handles the fast path; this is the safety net.
+let lastActivity = Date.now()
+const schedule = async () => {
+  const sentBefore = bridge.sent
+  await bridge.tick()
+  if (bridge.sent !== sentBefore) lastActivity = Date.now()
+  if (closed) return
+  const delay = Date.now() - lastActivity < 30_000 ? config.activePollMs : config.pollMs
+  timer = setTimeout(() => void schedule(), delay)
+}
 config.log('started', {
   homeserver: homeserverUrl,
   teamStatePath,
@@ -116,4 +131,4 @@ config.log('started', {
   registrationToken: config.registrationToken === undefined ? 'missing' : 'set',
 })
 
-await bridge.tick()
+await schedule()

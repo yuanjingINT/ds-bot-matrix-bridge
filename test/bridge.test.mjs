@@ -305,3 +305,34 @@ test('the creator and the user are admins from the room\'s first event', async (
     await mock.close()
   }
 })
+
+test('a rebuilt room tombstones the old one instead of orphaning it', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const { dir, statePath } = await home(teamWith(
+      [bot('b1', 'Chief')],
+      group('g1', '群', ['b1'], [{ seq: 1, who: 'Chief', botId: 'b1', text: '一' }]),
+    ))
+    const config = configFor(mock, { dir, statePath })
+    await new Bridge(config).tick()
+    const oldRoomId = [...mock.rooms.keys()][0]
+
+    // The group disappears, then comes back: the bridge makes a new room and must point
+    // the old one at it.
+    await writeFile(statePath, JSON.stringify(teamWith([bot('b1', 'Chief')])))
+    await new Bridge(config).tick()
+    const back = teamWith([bot('b1', 'Chief')], group('g1', '群', ['b1'], [{ seq: 1, who: 'Chief', botId: 'b1', text: '一' }]))
+    back.rooms.g1.seq = 1
+    await writeFile(statePath, JSON.stringify(back))
+    const events = []
+    await new Bridge(configFor(mock, { dir, statePath }, { log: (event, fields) => events.push({ event, ...fields }) })).tick()
+
+    const tombstone = mock.rooms.get(oldRoomId).state.get('m.room.tombstone|')
+    assert.ok(tombstone !== undefined, 'the old room got a tombstone')
+    const newRoomId = [...mock.rooms.keys()].find(id => id !== oldRoomId)
+    assert.equal(tombstone.replacement_room, newRoomId)
+    assert.equal(mock.rooms.get(oldRoomId).members.has('@chief:tuxai.test'), false, 'the Bot left the old room')
+  } finally {
+    await mock.close()
+  }
+})
