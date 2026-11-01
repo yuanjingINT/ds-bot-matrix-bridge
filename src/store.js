@@ -45,7 +45,7 @@ export class BridgeStore {
     }
     const snapshot = JSON.stringify({ updatedAt: new Date().toISOString(), bots }, null, 1)
     mkdirSync(dirname(this.accountsPath), { recursive: true })
-    writeFileSync(this.accountsPath, snapshot, { mode: 0o644 })
+    writeFileSync(this.accountsPath, snapshot, { mode: 0o600 })
     return this.accountsPath
   }
 

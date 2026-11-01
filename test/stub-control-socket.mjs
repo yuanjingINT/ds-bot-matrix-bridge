@@ -30,7 +30,8 @@ const server = createServer((request, response) => {
   request.on('end', () => {
     const url = new URL(request.url ?? '/', 'http://bridge')
     if (url.pathname === '/health' || url.pathname === '/version') {
-      const body = JSON.stringify({ ok: true, name: 'matrix-bridge-host', version: 'stub', socket: socketPath })
+      // Never claim the plugin's name: the bridge refuses to receive from a stand-in.
+      const body = JSON.stringify({ ok: true, name: 'stub', version: 'stub', socket: socketPath })
       response.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
       response.end(body)
       return

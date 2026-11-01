@@ -480,6 +480,11 @@ export class Bridge {
       delete record.pending
       record.recent ??= {}
       record.recent[String(line.seq)] = response.event_id ?? null
+      // The bridge's own event is known before /sync ever sees it: remembering it as handled
+      // saves one echo round per message (a `sent` plus an `ignored-sender` otherwise).
+      if (typeof response.event_id === 'string') {
+        record.handled = [...(record.handled ?? []), response.event_id].filter(Boolean).slice(-300)
+      }
       const keep = Object.keys(record.recent)
       for (const key of keep.slice(0, Math.max(0, keep.length - 50))) delete record.recent[key]
       await this.store.setRoom(room.id, record)

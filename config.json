@@ -2,7 +2,9 @@
   "userMxid": "@yuanjing:tuxai.org",
   "userDisplayName": "用户",
   "extraInvites": [
-    "@verify-a:tuxai.org"
+    "@verify-a:tuxai.org",
+    "@qa-a:tuxai.org",
+    "@qa-b:tuxai.org"
   ],
   "pollMs": 1500,
   "encrypted": false,
@@ -13,6 +15,11 @@
     "@dito:dito.asia"
   ],
   "allowedSenders": [
-    "@yuanjing:tuxai.org"
+    "@yuanjing:tuxai.org",
+    "@verify-a:tuxai.org",
+    "@verify-b:tuxai.org",
+    "@mxprobe:tuxai.org",
+    "@qa-a:tuxai.org",
+    "@qa-b:tuxai.org"
   ]
 }

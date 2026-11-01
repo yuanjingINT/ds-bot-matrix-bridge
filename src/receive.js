@@ -13,6 +13,8 @@
 import { request as httpRequest } from 'node:http'
 
 const SYNC_TIMEOUT_MS = 25_000
+// What the DSH plugin (../plugin/index.js) calls itself in /health.
+const PLUGIN_NAME = 'matrix-bridge-host'
 const HANDLED_KEPT = 300
 // What /sync asks for: this room only, message events only.
 const filterFor = roomId => JSON.stringify({
@@ -189,9 +191,8 @@ export class Receiver {
           sender: event.sender ?? null,
           reason: 'sender is not in allowedSenders',
         })
-        const skipped = this.store.room(groupId)
-        skipped.handled = [...(skipped.handled ?? []), event.event_id].filter(Boolean).slice(-HANDLED_KEPT)
-        await this.store.setRoom(groupId, skipped)
+        // Deliberately not written to handled[]: a sender the allowlist grows to include
+        // later must still be deliverable, and a skipped message is not a delivered one.
         continue
       }
       const line = this.textOf(event, names)
@@ -292,7 +293,19 @@ export class Receiver {
           }
           try {
             const parsed = JSON.parse(body)
-            resolve(parsed?.ok === true ? parsed : { ok: false, reason: `unexpected health body: ${body.slice(0, 200)}` })
+            if (parsed?.ok !== true) {
+              resolve({ ok: false, reason: `unexpected health body: ${body.slice(0, 200)}` })
+              return
+            }
+            // Anything listening on the socket is not the plugin just because it answers
+            // /health: a stand-in for tests (test/stub-control-socket.mjs) did exactly that
+            // and made receive look healthy while nothing reached DS Bot. The name is the
+            // plugin's own, so only the real thing turns receiving on.
+            if (parsed.name !== PLUGIN_NAME) {
+              resolve({ ok: false, reason: `the socket is answered by "${String(parsed.name)}", not ${PLUGIN_NAME}` })
+              return
+            }
+            resolve(parsed)
           } catch {
             resolve({ ok: false, reason: `health is not JSON: ${body.slice(0, 200)}` })
           }
