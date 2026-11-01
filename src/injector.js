@@ -60,6 +60,24 @@ export class GuiInjector {
     return this.cookie
   }
 
+  /**
+   * Proves the channel end to end instead of assuming it: a read-only endpoint the GUI
+   * answers with `ok`. A token file on disk proves nothing (the GUI may be down, or the
+   * token from an older process), and a listener that is not the plugin proves nothing
+   * either — that is how a test stub once made the bridge claim receiving was ready.
+   */
+  async ping() {
+    try {
+      const result = await this.call({ endpoint: 'state', payload: { since: -1 } })
+      if (result.status !== 200) return { ok: false, reason: `the GUI answered HTTP ${result.status}` }
+      const parsed = JSON.parse(result.text)
+      if (parsed?.ok !== true) return { ok: false, reason: parsed?.error?.message ?? 'the GUI refused the probe' }
+      return { ok: true, transport: 'gui-http', verified: true }
+    } catch (error) {
+      return { ok: false, reason: error?.message ?? String(error) }
+    }
+  }
+
   async call(body) {
     if (this.cookie === undefined) await this.mintCookie()
     const response = await fetch(`${this.baseUrl}/api/bot`, {

@@ -247,8 +247,10 @@ export class Receiver {
   }
 
   /** Hands one line to the DS Bot host, as the user typed it. */
-  post(groupId, text) {
-    return this.injector.send(groupId, text)
+  async post(groupId, text) {
+    await this.injector.send(groupId, text)
+    // The forward half must not send this straight back to Matrix as a Bot message.
+    this.config.onInjected?.(groupId, text)
   }
 
   /**
@@ -257,9 +259,17 @@ export class Receiver {
    * comes later. A failure comes back as {ok:false, reason}, so the log can say why
    * receiving is off instead of only that it is.
    */
-  health() {
-    if (this.injector.available()) return Promise.resolve({ ok: true, transport: 'gui-http' })
-    return Promise.resolve({ ok: false, reason: `no GUI token at ${this.config.guiTokenFile ?? 'the gui_token file'}` })
+  async health() {
+    if (!this.injector.available()) {
+      return { ok: false, reason: `no GUI token at ${this.config.guiTokenFile ?? 'the gui_token file'}`, transport: 'none' }
+    }
+    // Cached for a few seconds: a probe per tick would be a request per second for nothing.
+    const now = Date.now()
+    if (this.healthCache !== undefined && now - this.healthAt < 15_000) return this.healthCache
+    const result = await this.injector.ping()
+    this.healthCache = result
+    this.healthAt = now
+    return result
   }
 }
 

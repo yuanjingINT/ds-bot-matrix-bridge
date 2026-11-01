@@ -18,6 +18,11 @@ export function acquireLock(path) {
       const fd = openSync(path, 'wx', 0o600)
       writeSync(fd, String(process.pid))
       closeSync(fd)
+      // Between open() and the write above the file is empty, and a second starter that
+      // read it would treat the empty file as a crashed holder's lock and take it over.
+      // So the winner is the process whose pid reads back from the file afterwards.
+      const confirmed = Number.parseInt(readFileSync(path, 'utf8').trim(), 10)
+      if (confirmed !== process.pid) throw new Error(`another bridge took the lock at ${path} while starting (its pid is ${confirmed})`)
       return () => {
         try { unlinkSync(path) } catch { /* already gone */ }
       }

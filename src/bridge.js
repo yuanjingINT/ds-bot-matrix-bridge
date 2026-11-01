@@ -28,6 +28,25 @@ export class Bridge {
     this.running = false
     this.again = false
     this.sent = 0
+    // Texts the receive side just injected as the user, so the forward side does not send
+    // them straight back to Matrix as a Bot message ("回声").
+    this.injected = new Map()
+  }
+
+  /** Called by the receive side after a Matrix line became a user message in the group. */
+  noteInjected(groupId, text) {
+    const normalized = String(text).replace(/\s+/g, ' ').trim()
+    if (normalized === '') return
+    this.injected.set(`${groupId}\u0000${normalized}`, Date.now())
+    // Only the last few minutes matter; anything older is a genuinely new message.
+    const cutoff = Date.now() - 10 * 60_000
+    for (const [key, at] of this.injected) if (at < cutoff) this.injected.delete(key)
+  }
+
+  wasInjected(groupId, text) {
+    const normalized = String(text).replace(/\s+/g, ' ').trim()
+    const at = this.injected.get(`${groupId}\u0000${normalized}`)
+    return at !== undefined && Date.now() - at < 10 * 60_000
   }
 
   // One pass at a time; a trigger that lands during a pass runs once more at the end.
@@ -440,6 +459,15 @@ export class Bridge {
     }
     for (const line of (room.log ?? [])) {
       if (typeof line.seq !== 'number' || line.seq <= cursor) continue
+      // A line this bridge itself injected came from Matrix; sending it back would show
+      // every user message twice. The user's own copy is already in the room.
+      if (line.botId === undefined && this.wasInjected(room.id, await fullLineText(this.config.home, room.id, line))) {
+        this.log('echo-skipped', { group_id: room.id, room_id: record.matrixRoomId, seq: line.seq })
+        cursor = line.seq
+        record.cursor = cursor
+        await this.store.setRoom(room.id, record)
+        continue
+      }
       // Already mirrored on an earlier run (dedupe table, e.g. after restoring a backup
       // of the state): skip it rather than trust the cursor alone.
       if (record.recent?.[String(line.seq)] !== undefined) {

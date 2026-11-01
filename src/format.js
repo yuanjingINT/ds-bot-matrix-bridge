@@ -12,7 +12,9 @@ const whoOf = (line, config) => (line.botId === undefined
 export function renderLine({ room, line, text, config }) {
   const who = whoOf(line, config)
   const fromUser = line.botId === undefined
-  const body = text === '' ? `${who} (empty message)` : `${who}: ${text}`
+  // The sender account and its display name already say who wrote it; a "名字：" prefix in
+  // the body would show the name twice and corrupt copied text.
+  const body = text === '' ? '(empty message)' : text
   return {
     msgtype: 'm.text',
     body: body.length > MAX_BODY ? `${body.slice(0, MAX_BODY)}\n… (truncated by the bridge)` : body,

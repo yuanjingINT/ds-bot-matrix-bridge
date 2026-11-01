@@ -166,7 +166,7 @@ test('a Bot added to a group later gets an account, an invite and a join', async
     assert.ok(room.members.has('@yanshou:tuxai.test'), 'new Bot joined the existing room')
     const sent = room.events.at(-1)
     assert.equal(sent.sender, '@yanshou:tuxai.test', 'the new Bot speaks as itself')
-    assert.equal(sent.content.body, '验收: 我进来了')
+    assert.equal(sent.content.body, '我进来了')
   } finally {
     await mock.close()
   }
@@ -389,6 +389,56 @@ test('a lost room record adopts the existing room instead of creating a second o
     assert.equal(mock.rooms.size, 1, 'no duplicate room was created')
     assert.ok(again.store.room('session-g1')?.matrixRoomId === roomId, 'the old room is mapped again')
     assert.ok(config.events.some(e => e.event === 'room-adopted' && e.room_id === roomId), 'the adoption is logged')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('a forwarded line keeps its text, with no "name:" prefix', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const { dir, statePath } = await home(teamWith(
+      [bot('b1', 'Chief')],
+      group('g1', '群', ['b1'], [{ seq: 1, who: 'Chief', botId: 'b1', text: '**加粗** 与\n多行 ✅' }]),
+    ))
+    await new Bridge(configFor(mock, { dir, statePath })).tick()
+    const roomId = [...mock.rooms.keys()][0]
+    const body = mock.eventsIn(roomId)[0].body
+    assert.equal(body, '**加粗** 与\n多行 ✅', 'verbatim, no prefix, formatting intact')
+    assert.equal(mock.eventsIn(roomId)[0].displayname, 'Chief', 'identity comes from the sender')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('a line the bridge injected is not mirrored back into the room', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const { dir, statePath } = await home(teamWith(
+      [bot('b1', 'Chief')],
+      group('g1', '群', ['b1'], [{ seq: 1, who: 'Chief', botId: 'b1', text: '一' }]),
+    ))
+    const paths = { dir, statePath }
+    const bridge = new Bridge(configFor(mock, paths))
+    await bridge.tick()
+    const roomId = [...mock.rooms.keys()][0]
+    const before = mock.eventsIn(roomId).length
+
+    // The receive half delivers "test" as the user; the host logs it as a User line.
+    bridge.noteInjected('g1', 'test')
+    const grown = teamWith(
+      [bot('b1', 'Chief')],
+      group('g1', '群', ['b1'], [
+        { seq: 1, who: 'Chief', botId: 'b1', text: '一' },
+        { seq: 2, who: 'User', text: 'test' },
+      ]),
+    )
+    await writeFile(statePath, JSON.stringify(grown, null, 1))
+    const events = []
+    await bridge.tick()
+
+    // The same process remembers the injection, so the echoed user line is skipped.
+    assert.equal(mock.eventsIn(roomId).length, before, 'the echoed user line is not re-posted')
   } finally {
     await mock.close()
   }

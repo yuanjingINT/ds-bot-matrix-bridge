@@ -37,7 +37,14 @@ const injector = new GuiInjector({ tokenFile: settings.guiTokenFile, baseUrl: se
 const receiver = new Receiver({
   store: bridge.store,
   accounts: bridge.accounts,
-  config: { ...config, injector, guiTokenFile: settings.guiTokenFile },
+  config: {
+    ...config,
+    injector,
+    guiTokenFile: settings.guiTokenFile,
+    // The receive half tells the forward half what it just injected, so the same line is
+    // not mirrored back into the room as a second (Bot-authored) copy.
+    onInjected: (groupId, text) => bridge.noteInjected(groupId, text),
+  },
 })
 const joiner = new InviteAccepter({ homeserverUrl: settings.homeserverUrl, tokenFile: settings.userTokenFile, log: config.log })
 const AUTOJOIN_EVERY_MS = 10_000
@@ -48,8 +55,14 @@ let blockedLoggedAt = 0
 const BLOCKED_LOG_EVERY_MS = 60_000
 const checkDelivery = async () => {
   const health = await receiver.health()
-  if (health?.ok === true) {
-    if (!pluginReady) config.log('receive-ready', { transport: health.transport ?? 'gui-http' })
+  // A listener on the socket is not proof of anything: the test stub answers /health too.
+  // Only the plugin names itself and its version, so anything else keeps receiving off.
+  // The plugin names itself and its version; the GUI channel is proven by a real probe
+  // (both `verified`). A bare `ok` from anything listening on a socket is not enough.
+  const isPlugin = health?.ok === true && health?.verified === true
+    && (health?.transport === 'gui-http' || (health?.name === 'matrix-bridge-host' && typeof health?.version === 'string'))
+  if (isPlugin) {
+    if (!pluginReady) config.log('receive-ready', { transport: health.transport ?? 'plugin', name: health.name, version: health.version, socket: settings.controlSocket })
     pluginReady = true
     return true
   }
@@ -58,6 +71,12 @@ const checkDelivery = async () => {
   const now = Date.now()
   if (pluginReady || now - blockedLoggedAt >= BLOCKED_LOG_EVERY_MS) {
     if (pluginReady) config.log('receive-unavailable', { socket: settings.controlSocket, reason: health?.reason ?? 'the DSH plugin stopped answering' })
+    else if (health !== undefined) {
+      config.log('receive-blocked', {
+        socket: settings.controlSocket,
+        reason: health?.reason ?? `the socket answered, but not as the plugin (name=${health?.name ?? 'none'}, version=${health?.version ?? 'none'})`,
+      })
+    }
     else config.log('receive-blocked', {
       reason: health?.reason ?? 'the GUI token is missing',
       hint: 'put the DSH web launch token in the gui_token file (README), or install the matrix-bridge-host plugin',
