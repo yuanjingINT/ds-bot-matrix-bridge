@@ -1,50 +1,53 @@
-// Receiving turns on only for the real DSH plugin. A stand-in that answers /health (the
-// one used to test the receive loop before the plugin is mounted) must never count.
+// Delivery health: receiving turns on only when there is a real route into DS Bot and it
+// answers. The route today is the GUI's own API, reached through the injector's probe, so
+// these tests drive the receiver with a stand-in injector instead of a socket.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { Receiver } from '../src/receive.js'
 
-async function withSocket(answer, run) {
-  const socketPath = join(tmpdir(), `mx-health-${process.pid}-${Math.random().toString(16).slice(2)}.sock`)
-  const server = createServer((request, response) => {
-    response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify(answer))
-  })
-  await new Promise(resolve => server.listen(socketPath, resolve))
-  try {
-    return await run(socketPath)
-  } finally {
-    await new Promise(resolve => server.close(resolve))
-  }
-}
-
-const receiverOn = socketPath => new Receiver({
+const receiverWith = (injector) => new Receiver({
   store: { room: () => undefined, rooms: () => ({}), bots: () => ({}) },
   accounts: {},
-  config: { controlSocket: socketPath, userMxid: '', log: () => {} },
+  config: { injector, guiTokenFile: '/nonexistent/gui_token', userMxid: '', log: () => {} },
 })
 
-test('the real plugin turns receiving on', async () => {
-  await withSocket({ ok: true, name: 'matrix-bridge-host', version: '0.1.0' }, async (socketPath) => {
-    const health = await receiverOn(socketPath).health()
-    assert.equal(health.ok, true)
-    assert.equal(health.version, '0.1.0')
-  })
+test('a working route turns receiving on, and says which transport it is', async () => {
+  const injector = {
+    available: () => true,
+    ping: async () => ({ ok: true, transport: 'gui-http', verified: true }),
+  }
+  const health = await receiverWith(injector).health()
+  assert.equal(health.ok, true)
+  assert.equal(health.verified, true)
+  assert.equal(health.transport, 'gui-http')
 })
 
-test('a stand-in on the socket does not pass as the plugin', async () => {
-  await withSocket({ ok: true, name: 'stub', version: 'stub' }, async (socketPath) => {
-    const health = await receiverOn(socketPath).health()
-    assert.equal(health.ok, false)
-    assert.match(health.reason, /not matrix-bridge-host/)
-  })
-})
-
-test('nothing on the socket is reported as a reason, not as ready', async () => {
-  const health = await receiverOn(join(tmpdir(), 'mx-health-does-not-exist.sock')).health()
+test('a route whose probe fails is reported with its reason, not silently dropped', async () => {
+  const injector = {
+    available: () => true,
+    ping: async () => ({ ok: false, reason: 'the GUI did not accept the launch token' }),
+  }
+  const health = await receiverWith(injector).health()
   assert.equal(health.ok, false)
-  assert.match(health.reason, /ENOENT|cannot|no such/i)
+  assert.match(health.reason, /launch token/)
+})
+
+test('no token means no receiving, with the file that is missing in the reason', async () => {
+  const injector = { available: () => false }
+  const health = await receiverWith(injector).health()
+  assert.equal(health.ok, false)
+  assert.match(health.reason, /gui_token/)
+})
+
+test('a probe result is cached briefly, so a quiet tick is not a request per second', async () => {
+  let calls = 0
+  const injector = {
+    available: () => true,
+    ping: async () => { calls += 1; return { ok: true, transport: 'gui-http', verified: true } },
+  }
+  const receiver = receiverWith(injector)
+  await receiver.health()
+  await receiver.health()
+  await receiver.health()
+  assert.equal(calls, 1)
 })
