@@ -89,9 +89,18 @@ const stop = async (signal) => {
   closed = true
   clearInterval(timer)
   watcher?.close()
-  await receiver.stop()
+  // The lock goes first: a /sync that is still in flight must not keep the next start from
+  // taking over, and a stop that waits on it would hang past the service manager's timeout.
   releaseLock()
-  await bridge.current
+  // A long poll can take 25s to unwind; give it a moment, then leave regardless.
+  const hard = setTimeout(() => {
+    config.log('stopped', { signal, forced: true })
+    process.exit(0)
+  }, 4_000)
+  hard.unref?.()
+  await receiver.stop().catch(() => {})
+  await bridge.current.catch(() => {})
+  clearTimeout(hard)
   config.log('stopped', { signal })
   process.exit(0)
 }
