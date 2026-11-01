@@ -151,3 +151,34 @@ npm test     # 8 个用例，跑在本地 mock homeserver 上，不碰真服务�
 本项目以 **GNU General Public License v3.0 或更新版本**（GPL-3.0-or-later）发布，全文见
 [LICENSE](LICENSE)。你可以自由使用、修改和再分发；再分发衍生作品时须以同一许可开源，
 并保留版权与许可声明。
+
+## 参考与致谢
+
+这个桥接没有直接复用下面这些项目的代码（加密部分只用了官方的 WASM 绑定，收发是手写的
+client-server API），但设计上大量参考了它们的文档、源码和踩坑记录：
+
+- [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk)（Apache-2.0）——
+  加密状态机 `OlmMachine` 的语义、`outgoingRequests` 请求泵模型、交叉签名流程，
+  都是按它的实现和文档推的。
+- [matrix-sdk-crypto-nodejs](https://github.com/matrix-org/matrix-rust-sdk/tree/main/bindings/matrix-sdk-crypto-nodejs)
+  —— 最初选型用的原生绑定；它在 Node 上 napi/tokio 的崩溃行为（本机 Node 24/26 均复现）
+  促成了改用 WASM 的路线。
+- [matrix-sdk-crypto-wasm](https://www.npmjs.com/package/@matrix-org/matrix-sdk-crypto-wasm)
+  （Apache-2.0）—— 当前实际使用的加密机（`OlmMachine` + IndexedDB 存储）。
+- [matrix-bot-sdk](https://github.com/turt2live/matrix-bot-sdk)（MIT）—— 它的
+  `SignatureUpload` 直 throw、设备永不被自签名的问题在网上有完整记录，帮我们提前避坑。
+- [matrix-js-sdk](https://github.com/matrix-org/matrix-js-sdk)（Apache-2.0）—— 客户端
+  侧对加密事件、未验证设备警告的呈现逻辑，验收标准是对着它定的。
+- [continuwuity](https://continuwuity.org/) / [conduwuit](https://github.com/x86pup/conduwuit)
+  —— 服务端行为参考：注册 token 的用法、创建者在 `power_levels` 里的隐式 100
+  （显式列进 `users` 会让整条事件 403），都是照它的实现和实测结论来的。
+- [pinyin-pro](https://github.com/zh-lx/pinyin-pro)（MIT）—— Bot 中文名转 Matrix localpart。
+- [fake-indexeddb](https://github.com/dumbmatter/fakeIndexedDB)（Apache-2.0）—— 让 WASM
+  加密机在 Node 里拿到 IndexedDB 实现，再由桥接把内容落盘。
+- [DS Bot / DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）——
+  宿主侧 `state.json` 的结构（`rooms[].log[]`、单调 `seq`、原子替换）是本桥接唯一的
+  输入来源；GUI 的 `/api/bot` 与启动 token 是反向注入的入口。
+- [Element](https://github.com/element-hq/element-web)（AGPL-3.0）—— 作为验收时的
+  参照客户端，用于核对发送者身份、未验证设备提示和加密事件展示。
+
+如果你认为某处应当明确署名而没有写到，告诉我补上。
