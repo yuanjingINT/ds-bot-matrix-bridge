@@ -27,13 +27,13 @@ const config = {
   },
 }
 
-const bridge = new Bridge(config)
-// sync.js is the production entry point, so it takes the same single-instance lock as
-// index.js: two processes would mirror and receive the same lines twice.
-const releaseLock = acquireLock(join(settings.root, 'state', 'bridge.lock'))
 // Delivery goes through the GUI's own API by default (no profile change); the plugin
 // socket stays available as the richer route later.
 const injector = new GuiInjector({ tokenFile: settings.guiTokenFile, baseUrl: settings.guiUrl, log: config.log })
+const bridge = new Bridge({ ...config, injector })
+// sync.js is the production entry point, so it takes the same single-instance lock as
+// index.js: two processes would mirror and receive the same lines twice.
+const releaseLock = acquireLock(join(settings.root, 'state', 'bridge.lock'))
 const receiver = new Receiver({
   store: bridge.store,
   accounts: bridge.accounts,

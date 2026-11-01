@@ -9,6 +9,7 @@ import { fullLineText, isEventLine, readTeam } from './dsbot.js'
 import { Accounts } from './accounts.js'
 import { BridgeStore } from './store.js'
 import { renderEventLine, renderLine } from './format.js'
+import { DirectMessages } from './dm.js'
 
 // A sync that only completes the account's view: no timeline, no state.
 const ADOPT_SYNC_FILTER = JSON.stringify({
@@ -31,6 +32,13 @@ export class Bridge {
     // Texts the receive side just injected as the user, so the forward side does not send
     // them straight back to Matrix as a Bot message ("回声").
     this.injected = new Map()
+    // Direct messages: one DM room per Bot, mirroring that Bot's own chat.
+    this.dm = new DirectMessages({
+      store: this.store,
+      accounts: this.accounts,
+      config: { ...config, wasInjected: (id, text) => this.wasInjected(id, text) },
+      injector: config.injector,
+    })
   }
 
   /** Called by the receive side after a Matrix line became a user message in the group. */
@@ -73,6 +81,18 @@ export class Bridge {
     await this.reconcileAccounts(team)
     const live = await this.reconcileRooms(team)
     for (const room of live) await this.forward(room, team)
+    // Direct messages travel the other way: one DM room per Bot, fed from its own chat.
+    if (this.dm.injector !== undefined) {
+      for (const bot of Object.values(team.bots)) {
+        if (!bot?.id) continue
+        try {
+          await this.dm.ensure(bot)
+          await this.dm.forward(bot)
+        } catch (error) {
+          this.log('dm-failed', { bot: bot.name, bot_id: bot.id, message: error?.message ?? String(error), errcode: error?.errcode })
+        }
+      }
+    }
     // The token-free account inventory 验收 checks senders against.
     this.store.publishAccounts(this.config.cryptoDir)
   }
@@ -421,6 +441,7 @@ export class Bridge {
   // history stays readable and the bridge simply stops writing to it.
   async retireGoneRooms(team, liveIds) {
     for (const [roomId, record] of Object.entries(this.store.rooms())) {
+      if (record.dm === true) continue
       if (liveIds.has(roomId) || record.goneAt !== undefined) continue
       record.goneAt = Date.now()
       await this.store.setRoom(roomId, record)

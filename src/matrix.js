@@ -53,7 +53,7 @@ export class MatrixClient {
     return this.request('PUT', `/rooms/${id}/send/m.room.message/${tx}`, content, { timeoutMs: 30_000 })
   }
 
-  async createRoom({ name, topic, invite = [], encrypted = false, powerLevels }) {
+  async createRoom({ name, topic, invite = [], encrypted = false, powerLevels, isDirect = false }) {
     const initial_state = encrypted
       ? [{ type: 'm.room.encryption', state_key: '', content: { algorithm: 'm.megolm.v1.aes-sha2' } }]
       : []
@@ -68,6 +68,7 @@ export class MatrixClient {
       preset: 'private_chat',
       visibility: 'private',
       initial_state,
+      ...(isDirect ? { is_direct: true } : {}),
       power_level_content_override: override,
     }, { timeoutMs: 30_000 })
   }
