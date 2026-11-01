@@ -12,6 +12,7 @@ import { Bridge } from './bridge.js'
 import { acquireLock } from './lock.js'
 import { Receiver } from './receive.js'
 import { InviteAccepter } from './invites.js'
+import { GuiInjector } from './injector.js'
 import { loadSettings } from './settings.js'
 
 const settings = loadSettings()
@@ -30,7 +31,14 @@ const bridge = new Bridge(config)
 // sync.js is the production entry point, so it takes the same single-instance lock as
 // index.js: two processes would mirror and receive the same lines twice.
 const releaseLock = acquireLock(join(settings.root, 'state', 'bridge.lock'))
-const receiver = new Receiver({ store: bridge.store, accounts: bridge.accounts, config })
+// Delivery goes through the GUI's own API by default (no profile change); the plugin
+// socket stays available as the richer route later.
+const injector = new GuiInjector({ tokenFile: settings.guiTokenFile, baseUrl: settings.guiUrl, log: config.log })
+const receiver = new Receiver({
+  store: bridge.store,
+  accounts: bridge.accounts,
+  config: { ...config, injector, guiTokenFile: settings.guiTokenFile },
+})
 const joiner = new InviteAccepter({ homeserverUrl: settings.homeserverUrl, tokenFile: settings.userTokenFile, log: config.log })
 const AUTOJOIN_EVERY_MS = 10_000
 const once = process.argv.includes('--once')
@@ -38,10 +46,10 @@ const once = process.argv.includes('--once')
 let pluginReady = false
 let blockedLoggedAt = 0
 const BLOCKED_LOG_EVERY_MS = 60_000
-const checkPlugin = async () => {
+const checkDelivery = async () => {
   const health = await receiver.health()
   if (health?.ok === true) {
-    if (!pluginReady) config.log('receive-ready', { socket: settings.controlSocket, plugin: health.version ?? 'unknown' })
+    if (!pluginReady) config.log('receive-ready', { transport: health.transport ?? 'gui-http' })
     pluginReady = true
     return true
   }
@@ -51,9 +59,8 @@ const checkPlugin = async () => {
   if (pluginReady || now - blockedLoggedAt >= BLOCKED_LOG_EVERY_MS) {
     if (pluginReady) config.log('receive-unavailable', { socket: settings.controlSocket, reason: health?.reason ?? 'the DSH plugin stopped answering' })
     else config.log('receive-blocked', {
-      socket: settings.controlSocket,
-      reason: health?.reason ?? 'the DSH plugin is not mounted',
-      hint: 'install the matrix-bridge-host plugin in the DSH profile (README, step 2) and restart the app',
+      reason: health?.reason ?? 'the GUI token is missing',
+      hint: 'put the DSH web launch token in the gui_token file (README), or install the matrix-bridge-host plugin',
     })
     blockedLoggedAt = now
   }
@@ -70,7 +77,7 @@ const tick = async () => {
     await joiner.accept()
   }
   if (!settings.receiveEnabled) return
-  if (!(await checkPlugin())) return
+  if (!(await checkDelivery())) return
   await receiver.reconcile(Object.keys(bridge.store.rooms()).map(id => ({ id })))
 }
 
@@ -120,9 +127,9 @@ try {
 }
 
 timer = setInterval(() => void tick(), settings.pollMs)
-// Ask the plugin before claiming anything: `receive: "on"` while the socket is missing is
-// how a broken inbound looked healthy for half an hour.
-const receiveAtStart = !settings.receiveEnabled ? 'off' : ((await checkPlugin()) ? 'on' : 'blocked')
+// Ask the delivery path before claiming anything: reporting `receive: "on"` while the
+// inbound is broken is how a stub socket once looked healthy for half an hour.
+const receiveAtStart = !settings.receiveEnabled ? 'off' : ((await checkDelivery()) ? 'on' : 'blocked')
 config.log('started', {
   mode: 'full',
   homeserver: settings.homeserverUrl,

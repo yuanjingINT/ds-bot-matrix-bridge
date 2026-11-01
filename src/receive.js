@@ -10,7 +10,6 @@
 //     twice;
 //   - the first sync of a room takes next_batch without delivering history, so a room
 //     that already has lines is not replayed into the group chat.
-import { request as httpRequest } from 'node:http'
 
 const SYNC_TIMEOUT_MS = 25_000
 // What the DSH plugin (../plugin/index.js) calls itself in /health.
@@ -43,7 +42,7 @@ export class Receiver {
     this.log = config.log
     this.loops = new Map()
     this.stopping = false
-    this.socketPath = config.controlSocket
+    this.injector = config.injector
     // Bridge accounts are never inbound. The store knows the Bots' own accounts; this set
     // adds historical ones (@dsbridge, Dito's bot) so an old bridge still running on the
     // same rooms cannot echo back in, even though it is not in the store.
@@ -247,74 +246,20 @@ export class Receiver {
     return `${name}（Matrix）：${body}`
   }
 
-  /** Hands one line to the DSH-side plugin over its UNIX socket. */
+  /** Hands one line to the DS Bot host, as the user typed it. */
   post(groupId, text) {
-    const payload = JSON.stringify({ sessionId: groupId, text })
-    return new Promise((resolve, reject) => {
-      const request = httpRequest({
-        socketPath: this.socketPath,
-        path: '/prompt',
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) },
-        timeout: 40_000,
-      }, (response) => {
-        const chunks = []
-        response.on('data', chunk => chunks.push(chunk))
-        response.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8')
-          if (response.statusCode !== 200) {
-            reject(new Error(`control socket answered ${response.statusCode}: ${body.slice(0, 300)}`))
-            return
-          }
-          resolve()
-        })
-      })
-      request.on('timeout', () => request.destroy(new Error('the control socket did not answer in time')))
-      request.on('error', reject)
-      request.end(payload)
-    })
+    return this.injector.send(groupId, text)
   }
 
   /**
-   * Whether the DSH plugin is up; the bridge refuses to start receiving without it. A
-   * failure comes back as {ok:false, reason} rather than undefined, so the log can say why
+   * Whether a message can be delivered right now. Today that is the GUI's own API,
+   * authenticated with the token in a 600 file; the plugin socket is the richer route and
+   * comes later. A failure comes back as {ok:false, reason}, so the log can say why
    * receiving is off instead of only that it is.
    */
   health() {
-    return new Promise((resolve) => {
-      const request = httpRequest({ socketPath: this.socketPath, path: '/health', method: 'GET', timeout: 3_000 }, (response) => {
-        const chunks = []
-        response.on('data', chunk => chunks.push(chunk))
-        response.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8')
-          if (response.statusCode !== 200) {
-            resolve({ ok: false, reason: `control socket answered ${response.statusCode}: ${body.slice(0, 200)}` })
-            return
-          }
-          try {
-            const parsed = JSON.parse(body)
-            if (parsed?.ok !== true) {
-              resolve({ ok: false, reason: `unexpected health body: ${body.slice(0, 200)}` })
-              return
-            }
-            // Anything listening on the socket is not the plugin just because it answers
-            // /health: a stand-in for tests (test/stub-control-socket.mjs) did exactly that
-            // and made receive look healthy while nothing reached DS Bot. The name is the
-            // plugin's own, so only the real thing turns receiving on.
-            if (parsed.name !== PLUGIN_NAME) {
-              resolve({ ok: false, reason: `the socket is answered by "${String(parsed.name)}", not ${PLUGIN_NAME}` })
-              return
-            }
-            resolve(parsed)
-          } catch {
-            resolve({ ok: false, reason: `health is not JSON: ${body.slice(0, 200)}` })
-          }
-        })
-      })
-      request.on('timeout', () => { request.destroy(); resolve({ ok: false, reason: 'the control socket did not answer in time' }) })
-      request.on('error', (error) => resolve({ ok: false, reason: `${error?.code ?? 'error'}: ${error?.message ?? String(error)}` }))
-      request.end()
-    })
+    if (this.injector.available()) return Promise.resolve({ ok: true, transport: 'gui-http' })
+    return Promise.resolve({ ok: false, reason: `no GUI token at ${this.config.guiTokenFile ?? 'the gui_token file'}` })
   }
 }
 

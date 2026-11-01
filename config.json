@@ -15,11 +15,6 @@
     "@dito:dito.asia"
   ],
   "allowedSenders": [
-    "@yuanjing:tuxai.org",
-    "@verify-a:tuxai.org",
-    "@verify-b:tuxai.org",
-    "@mxprobe:tuxai.org",
-    "@qa-a:tuxai.org",
-    "@qa-b:tuxai.org"
+    "@yuanjing:tuxai.org"
   ]
 }

@@ -64,6 +64,9 @@ export function loadSettings({ needsHomeserver = true } = {}) {
     onGroupDeleted: fileConfig.onGroupDeleted ?? 'notify',
     // The DSH plugin's socket (plugin/index.js). The bridge never writes the team file and
     // never needs the browser cookie the /api/bot route wants.
+    // The GUI's own API: token file, base URL. Deliver a Matrix line as the user through it.
+    guiTokenFile: process.env.DSH_GUI_TOKEN_FILE ?? fileConfig.guiTokenFile ?? join(homedir(), '.dsh', 'bot', 'workspace', '.secrets', 'gui_token'),
+    guiUrl: process.env.DSH_WEB_URL ?? fileConfig.guiUrl ?? 'http://127.0.0.1:3080',
     controlSocket: process.env.MATRIX_BRIDGE_CONTROL ?? fileConfig.controlSocket ?? join(homedir(), '.config', 'matrix-bridge', 'control.sock'),
     receiveEnabled: process.env.MATRIX_BRIDGE_RECEIVE !== '0' && fileConfig.receive !== false,
     // Optional: the user's own access token, so invites can be accepted for them. Absent
