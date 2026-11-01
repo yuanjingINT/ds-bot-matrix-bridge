@@ -1,0 +1,9 @@
+{
+  "userMxid": "@yuanjing:tuxai.org",
+  "userDisplayName": "用户",
+  "extraInvites": ["@verify-a:tuxai.org"],
+  "pollMs": 1500,
+  "encrypted": false,
+  "onGroupDeleted": "notify",
+  "registrationTokenFile": "/home/yuanjing/.dsh/bot/workspace/.secrets/matrix_registration_token"
+}

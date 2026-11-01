@@ -1,0 +1,17 @@
+{
+  "name": "matrix-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DS Bot group chats <-> Matrix rooms bridge (two-way)",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/bridge.test.mjs"
+  },
+  "dependencies": {
+    "pinyin-pro": "^3.29.5"
+  }
+}
