@@ -5,9 +5,11 @@
 // matrix-bridge-host plugin to be mounted in the DSH profile (see README). Without it the
 // bridge still forwards and says once that receiving is off.
 import { watch } from 'node:fs'
+import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { JsonlLog } from './log.js'
 import { Bridge } from './bridge.js'
+import { acquireLock } from './lock.js'
 import { Receiver } from './receive.js'
 import { InviteAccepter } from './invites.js'
 import { loadSettings } from './settings.js'
@@ -25,6 +27,9 @@ const config = {
 }
 
 const bridge = new Bridge(config)
+// sync.js is the production entry point, so it takes the same single-instance lock as
+// index.js: two processes would mirror and receive the same lines twice.
+const releaseLock = acquireLock(join(settings.root, 'state', 'bridge.lock'))
 const receiver = new Receiver({ store: bridge.store, accounts: bridge.accounts, config })
 const joiner = new InviteAccepter({ homeserverUrl: settings.homeserverUrl, tokenFile: settings.userTokenFile, log: config.log })
 const AUTOJOIN_EVERY_MS = 10_000
@@ -105,6 +110,9 @@ try {
 }
 
 timer = setInterval(() => void tick(), settings.pollMs)
+// Ask the plugin before claiming anything: `receive: "on"` while the socket is missing is
+// how a broken inbound looked healthy for half an hour.
+const receiveAtStart = !settings.receiveEnabled ? 'off' : ((await checkPlugin()) ? 'on' : 'blocked')
 config.log('started', {
   mode: 'full',
   homeserver: settings.homeserverUrl,
@@ -112,8 +120,9 @@ config.log('started', {
   userMxid: settings.userMxid,
   pollMs: settings.pollMs,
   encrypted: settings.encrypted,
-  receive: settings.receiveEnabled ? 'on' : 'off',
+  receive: receiveAtStart,
   controlSocket: settings.controlSocket,
+  userAccount: joiner.available ? 'token found' : 'no token (invites are not accepted for the user)',
   registrationToken: settings.registrationToken === undefined ? 'missing' : 'set',
 })
 

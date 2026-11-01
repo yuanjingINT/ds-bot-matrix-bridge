@@ -86,6 +86,9 @@ export async function startMockHomeserver({ serverName = 'tuxai.test', registrat
         state: new Map(),
         powerLevels: json.power_level_content_override ?? null,
       }
+      // The name and topic are creation-time state, as on a real homeserver.
+      if (json.name !== undefined) room.state.set('m.room.name|', { name: json.name })
+      if (json.topic !== undefined) room.state.set('m.room.topic|', { topic: json.topic })
       rooms.set(roomId, room)
       return send(res, 200, { room_id: roomId })
     }
@@ -107,6 +110,11 @@ export async function startMockHomeserver({ serverName = 'tuxai.test', registrat
       if (rest.startsWith('state/')) {
         const [, type, rawKey] = rest.split('/')
         const key = rawKey === undefined ? '' : decodeURIComponent(rawKey)
+        if (req.method === 'GET') {
+          const stored = room.state.get(`${type}|${key}`)
+          if (stored === undefined) return fail(res, 404, 'M_NOT_FOUND', 'state not set')
+          return send(res, 200, stored)
+        }
         room.state.set(`${type}|${key}`, json)
         return send(res, 200, { event_id: `$state${counters.event += 1}` })
       }
@@ -138,6 +146,18 @@ export async function startMockHomeserver({ serverName = 'tuxai.test', registrat
       if (!room.invites.has(me)) return fail(res, 403, 'M_FORBIDDEN', 'not invited')
       room.members.add(me)
       return send(res, 200, { room_id: roomId })
+    }
+
+    // The bridge syncs once before it asks what the account has joined, so a fresh account
+    // never looks like "in no rooms" and get a duplicate room created.
+    if (req.method === 'GET' && path === '/sync') {
+      counters.sync = (counters.sync ?? 0) + 1
+      return send(res, 200, { next_batch: `s${counters.sync}`, rooms: { join: {} } })
+    }
+
+    if (req.method === 'GET' && path === '/joined_rooms') {
+      const joined = [...rooms.entries()].filter(([, room]) => room.members.has(me)).map(([roomId]) => roomId)
+      return send(res, 200, { joined_rooms: joined })
     }
 
     if (req.method === 'GET' && path === '/account/whoami') return send(res, 200, { user_id: me })

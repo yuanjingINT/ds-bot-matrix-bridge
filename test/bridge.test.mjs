@@ -360,3 +360,36 @@ test('a rename also changes the nickname inside each mirrored room', async () =>
     await mock.close()
   }
 })
+
+test('a lost room record adopts the existing room instead of creating a second one', async () => {
+  const mock = await startMockHomeserver()
+  try {
+    const team = teamWith(
+      [bot('session-chief', 'Chief'), bot('session-qiao', '桥接')],
+      group('session-g1', 'MX 测试', ['session-chief', 'session-qiao'], [
+        { seq: 1, who: 'Chief', botId: 'session-chief', text: '开工' },
+      ]),
+    )
+    const { dir, statePath } = await home(team)
+    const config = configFor(mock, { dir, statePath })
+    await new Bridge(config).tick()
+    const [roomId] = mock.rooms.keys()
+    assert.equal(mock.rooms.size, 1)
+
+    // The state file loses its room record but keeps the accounts (the exact shape of a
+    // state file restored from before the room was made).
+    const stateFile = join(dir, 'bridge', 'bridge.json')
+    const saved = JSON.parse(await readFile(stateFile, 'utf8'))
+    delete saved.rooms
+    await writeFile(stateFile, JSON.stringify(saved, null, 1))
+    await writeFile(`${stateFile}.bak`, JSON.stringify({ ...saved, rooms: {} }, null, 1))
+
+    const again = new Bridge(config)
+    await again.tick()
+    assert.equal(mock.rooms.size, 1, 'no duplicate room was created')
+    assert.ok(again.store.room('session-g1')?.matrixRoomId === roomId, 'the old room is mapped again')
+    assert.ok(config.events.some(e => e.event === 'room-adopted' && e.room_id === roomId), 'the adoption is logged')
+  } finally {
+    await mock.close()
+  }
+})

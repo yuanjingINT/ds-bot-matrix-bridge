@@ -10,6 +10,13 @@ import { Accounts } from './accounts.js'
 import { BridgeStore } from './store.js'
 import { renderEventLine, renderLine } from './format.js'
 
+// A sync that only completes the account's view: no timeline, no state.
+const ADOPT_SYNC_FILTER = JSON.stringify({
+  room: { timeline: { limit: 0 }, state: { limit: 0 }, ephemeral: { types: [] }, account_data: { types: [] } },
+  presence: { types: [] },
+  account_data: { types: [] },
+})
+
 const txnIdOf = (roomId, seq) => `dsbot.${roomId}.${seq}`.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)
 
 export class Bridge {
@@ -105,8 +112,16 @@ export class Bridge {
     if (creator === undefined) return undefined
     // Before making a room, check whether one of our accounts is already in a room with
     // this group's name: after a lost state file, adopting beats creating a duplicate.
-    const adopted = await this.adoptExistingRoom(room, members)
-    if (adopted !== undefined) {
+    const adoption = await this.adoptExistingRoom(room, members)
+    if (adoption.unavailable !== undefined) {
+      // Without a trustworthy joined-room list, creating now would duplicate a room that
+      // already exists (and lose the messages written while the duplicate was made). The
+      // next tick tries again.
+      this.log('room-create-deferred', { group_id: room.id, group: room.name, reason: adoption.unavailable })
+      return undefined
+    }
+    if (adoption.room !== undefined) {
+      const adopted = adoption.room
       await this.store.setRoom(room.id, adopted)
       this.log('room-adopted', { group_id: room.id, group: room.name, room_id: adopted.matrixRoomId })
       await this.ensureMembers(room.id, adopted, members)
@@ -230,17 +245,45 @@ export class Bridge {
 
   // Finds a room one of the member accounts already joined whose name matches the group.
   // The adoption starts at the current sequence, so old lines are not re-posted.
+  //
+  // Returns {room} when a match is found, {} when the accounts are definitely in no such
+  // room, and {unavailable} when the joined list cannot be trusted: a fresh account that
+  // has not synced yet answers /joined_rooms with nothing, and creating on that answer is
+  // how a restart rebuilds a room that already exists. So each account syncs once before it
+  // is asked, and a failed sync means "cannot tell", never "no room".
   async adoptExistingRoom(room, members) {
     const mapped = new Set(Object.values(this.store.rooms()).map(record => record.matrixRoomId))
+    let asked = 0
+    let failed = undefined
     for (const botId of members) {
       const client = this.accounts.clientOf(botId)
       if (client === undefined) continue
-      let joined = []
       try {
-        joined = (await client.request('GET', '/joined_rooms')).joined_rooms ?? []
-      } catch {
+        // The initial sync is what makes the account's room list complete; nothing from it
+        // is used here beyond that.
+        await client.request('GET', '/sync', undefined, {
+          query: { filter: ADOPT_SYNC_FILTER, timeout: 0 },
+          timeoutMs: 20_000,
+        })
+      } catch (error) {
+        failed = error?.message ?? String(error)
+        this.log('adopt-sync-failed', { group_id: room.id, room: room.name, bot_id: botId, message: failed })
         continue
       }
+      let joined
+      try {
+        joined = (await client.request('GET', '/joined_rooms')).joined_rooms
+      } catch (error) {
+        failed = error?.message ?? String(error)
+        this.log('adopt-joined-failed', { group_id: room.id, room: room.name, bot_id: botId, message: failed })
+        continue
+      }
+      if (!Array.isArray(joined)) {
+        failed = '/joined_rooms returned no list'
+        this.log('adopt-joined-failed', { group_id: room.id, room: room.name, bot_id: botId, message: failed })
+        continue
+      }
+      asked += 1
       for (const matrixRoomId of joined) {
         if (mapped.has(matrixRoomId)) continue
         let name
@@ -251,17 +294,20 @@ export class Bridge {
         }
         if (name !== room.name) continue
         return {
-          matrixRoomId,
-          name: room.name,
-          creatorBotId: botId,
-          members,
-          cursor: typeof room.seq === 'number' ? room.seq : 0,
-          createdAt: Date.now(),
-          adopted: true,
+          room: {
+            matrixRoomId,
+            name: room.name,
+            creatorBotId: botId,
+            members,
+            cursor: typeof room.seq === 'number' ? room.seq : 0,
+            createdAt: Date.now(),
+            adopted: true,
+          },
         }
       }
     }
-    return undefined
+    if (asked === 0) return { unavailable: failed ?? 'no member account could list its rooms' }
+    return {}
   }
 
   async setPowerLevels(client, record, members) {

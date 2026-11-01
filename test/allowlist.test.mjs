@@ -6,7 +6,7 @@ import { Receiver } from '../src/receive.js'
 const USER = '@yuanjing:tuxai.org'
 const ROOM = '!room:tuxai.org'
 
-function makeReceiver() {
+function makeReceiver(overrides = {}) {
   const room = { matrixRoomId: ROOM, handled: [] }
   const store = {
     room: () => room,
@@ -22,6 +22,7 @@ function makeReceiver() {
       allowedSenders: [USER],
       controlSocket: '/nonexistent',
       log: (event, fields) => events.push({ event, ...fields }),
+      ...overrides,
     },
   })
   const delivered = []
@@ -65,4 +66,27 @@ test('a replay of the same batch delivers nothing twice', async () => {
   await receiver.deliver('g1', ROOM, batch)
   await receiver.deliver('g1', ROOM, batch)
   assert.equal(delivered.length, 1)
+})
+
+test('a historical bridge account is dropped as an echo, even when it is allowlisted', async () => {
+  const { receiver, delivered, events } = makeReceiver({
+    allowedSenders: [USER, '@dsbridge:tuxai.org'],
+    ignoredSenders: ['@dsbridge:tuxai.org'],
+  })
+  await receiver.deliver('g1', ROOM, {
+    rooms: { join: { [ROOM]: { timeline: { events: [message('$b', '@dsbridge:tuxai.org', '老桥回灌')] } } } },
+  })
+  assert.deepEqual(delivered, [])
+  const ignored = events.find(e => e.event === 'ignored-sender')
+  assert.ok(ignored, 'the drop is logged')
+  assert.equal(ignored.event_id, '$b')
+  assert.equal(ignored.sender, '@dsbridge:tuxai.org')
+})
+
+test('a dropped echo is not logged twice when the same batch is replayed', async () => {
+  const { receiver, events } = makeReceiver({ ignoredSenders: ['@dsbridge:tuxai.org'] })
+  const batch = { rooms: { join: { [ROOM]: { timeline: { events: [message('$c', '@dsbridge:tuxai.org', 'x')] } } } } }
+  await receiver.deliver('g1', ROOM, batch)
+  await receiver.deliver('g1', ROOM, batch)
+  assert.equal(events.filter(e => e.event === 'ignored-sender').length, 1)
 })
