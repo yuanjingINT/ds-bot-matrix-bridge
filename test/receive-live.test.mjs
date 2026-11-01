@@ -16,7 +16,10 @@ import { Accounts } from '../src/accounts.js'
 import { Receiver } from '../src/receive.js'
 
 const root = join(import.meta.dirname, '..')
-const credentialsPath = join(homedir(), '.config', 'matrix-bridge', 'credentials.json')
+// The sender must be a real, non-bridge account. `@dsbridge` (the old default) was
+// deactivated on the homeserver, so point this at a live account's 600 file instead:
+//   MX_BRIDGE_TEST_SENDER_FILE=/path/to/sender.json node test/receive-live.test.mjs
+const credentialsPath = process.env.MX_BRIDGE_TEST_SENDER_FILE ?? join(homedir(), '.config', 'matrix-bridge', 'credentials.json')
 const senderCredentials = JSON.parse(readFileSync(credentialsPath, 'utf8'))
 const store = new BridgeStore(join(root, 'state', 'bridge.json'), join(root, 'state', 'accounts.json'))
 const data = store.load()
@@ -36,6 +39,16 @@ if (creator === undefined) {
 const homeserverUrl = process.env.MATRIX_HOMESERVER_URL ?? 'https://mx.tuxai.org'
 const creatorClient = new MatrixClient({ homeserverUrl, accessToken: creator.accessToken, userId: creator.userId })
 const senderClient = new MatrixClient({ homeserverUrl, accessToken: senderCredentials.accessToken, userId: senderCredentials.userId })
+
+// A deactivated or expired sender account cannot join the room, and that is a broken test
+// setup rather than a broken bridge: say so and stop instead of failing the receive path.
+try {
+  await senderClient.whoami()
+} catch (error) {
+  console.log(`SKIP: the sender account ${senderCredentials.userId} is not usable (${error?.errcode ?? error?.message})`)
+  console.log('Set MX_BRIDGE_TEST_SENDER_FILE to a live, non-bridge account and run again.')
+  process.exit(0)
+}
 
 // The sender must be in the room for its message to reach the timeline.
 await creatorClient.invite(record.matrixRoomId, senderCredentials.userId).catch(() => {})

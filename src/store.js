@@ -1,6 +1,7 @@
 // The bridge's own saved state: which Matrix account each Bot got, which Matrix room
 // each group maps to, and how far each room has been mirrored. It holds access tokens,
 // so the file is written 0600 and never leaves the machine.
+import { randomBytes } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { open, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -84,7 +85,9 @@ export class BridgeStore {
     const snapshot = JSON.stringify(this.data, null, 1)
     const run = this.writing.then(async () => {
       mkdirSync(dirname(this.path), { recursive: true })
-      const temp = `${this.path}.tmp`
+      // A unique temp name per write: two writers (the forward loop and the receive loop)
+      // used to share `<state>.tmp`, and the loser's chmod/rename then failed with ENOENT.
+      const temp = `${this.path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
       const handle = await open(temp, 'w', 0o600)
       try {
         await handle.writeFile(snapshot)
@@ -92,7 +95,7 @@ export class BridgeStore {
       } finally {
         await handle.close()
       }
-      chmodSync(temp, 0o600)
+      try { chmodSync(temp, 0o600) } catch { /* already 0600 from open() */ }
       await rename(temp, this.path)
       // A second copy: losing bridge.json must never mean "no rooms exist, create new
       // ones". load() restores from it instead of starting empty.

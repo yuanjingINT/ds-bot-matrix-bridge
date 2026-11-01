@@ -4,13 +4,15 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-PIDFILE="$ROOT/state/bridge.pid"
+LOCKFILE="$ROOT/state/bridge.lock"
 LOG="$ROOT/logs/stdout.log"
 ENTRY=${MATRIX_BRIDGE_ENTRY:-src/sync.js}
 
+# The bridge writes its own pid into the instance lock; that file, not a pid file of our
+# own, is the truth about what is running (two writers means two bridges).
 running() {
-  [ -f "$PIDFILE" ] || return 1
-  pid=$(cat "$PIDFILE" 2>/dev/null || true)
+  [ -f "$LOCKFILE" ] || return 1
+  pid=$(cat "$LOCKFILE" 2>/dev/null || true)
   [ -n "${pid:-}" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   echo "$pid"
@@ -24,8 +26,7 @@ start() {
   mkdir -p "$ROOT/state" "$ROOT/logs"
   cd "$ROOT"
   MATRIX_BRIDGE_VERBOSE=${MATRIX_BRIDGE_VERBOSE:-0} nohup node "$ENTRY" >> "$LOG" 2>&1 &
-  echo $! > "$PIDFILE"
-  sleep 1
+  sleep 2
   if pid=$(running); then
     echo "started (pid $pid, entry $ENTRY)"
   else
@@ -37,7 +38,6 @@ start() {
 stop() {
   if ! pid=$(running); then
     echo "not running"
-    rm -f "$PIDFILE"
     return 0
   fi
   kill "$pid" 2>/dev/null || true
@@ -49,7 +49,7 @@ stop() {
     echo "still running (pid $pid); send SIGKILL yourself if it is really stuck"
     return 1
   fi
-  rm -f "$PIDFILE"
+  rm -f "$LOCKFILE"
   echo "stopped"
 }
 

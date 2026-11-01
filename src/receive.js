@@ -136,6 +136,18 @@ export class Receiver {
     const join = response?.rooms?.join ?? {}
     const room = join[matrixRoomId]
     if (room === undefined) return
+    // E2EE is not implemented yet (see DESIGN-e2ee.md). An encrypted room must stop here
+    // instead of skipping its events: a skipped event with the token advanced is a message
+    // lost for good, and nothing in the log would say so. Throwing keeps the token where it
+    // is, so nothing is dropped while the crypto step is unfinished.
+    const encryptedState = (room.state?.events ?? []).find(event => event?.type === 'm.room.encryption')
+    const encryptedEvent = (room.timeline?.events ?? []).find(event => event?.type === 'm.room.encrypted')
+    if (encryptedState !== undefined || encryptedEvent !== undefined) {
+      const error = new Error('this room is end-to-end encrypted and decryption is not implemented yet (DESIGN-e2ee.md); the sync token is held so no message is dropped')
+      error.code = 'E2EE_NOT_READY'
+      this.log('encrypted-room', { group_id: groupId, room_id: matrixRoomId, state: encryptedState !== undefined, event: encryptedEvent?.event_id ?? null })
+      throw error
+    }
     // Member names come with the timeline's state (lazy-loaded), so a sender that has not
     // spoken before still shows a name.
     const names = new Map()
@@ -184,7 +196,17 @@ export class Receiver {
       }
       const line = this.textOf(event, names)
       if (line === undefined) continue
+      const tAckMx = Date.now()
       await this.post(groupId, line)
+      this.log('injected', {
+        group_id: groupId,
+        room_id: matrixRoomId,
+        event_id: event.event_id ?? null,
+        sender: event.sender ?? null,
+        length: line.length,
+        t_recv_mx: tAckMx,
+        t_injected: Date.now(),
+      })
       const latest = this.store.room(groupId)
       latest.handled = [...(latest.handled ?? []), event.event_id].filter(Boolean).slice(-HANDLED_KEPT)
       await this.store.setRoom(groupId, latest)

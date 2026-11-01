@@ -90,6 +90,7 @@ const stop = async (signal) => {
   clearInterval(timer)
   watcher?.close()
   await receiver.stop()
+  releaseLock()
   await bridge.current
   config.log('stopped', { signal })
   process.exit(0)
