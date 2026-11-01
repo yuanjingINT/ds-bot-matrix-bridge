@@ -12,6 +12,7 @@
     "test": "node --test test/bridge.test.mjs"
   },
   "dependencies": {
+    "@matrix-org/matrix-sdk-crypto-nodejs": "^0.6.6",
     "pinyin-pro": "^3.29.5"
   }
 }
